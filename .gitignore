@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+build/
+out/
+artifacts/
+CMakeFiles/
+CMakeCache.txt
+*.dir/
+*.o
+*.so
+*.a
+.vscode/

@@ -1,0 +1,3 @@
+[submodule "src/diagnostics"]
+	path = src/diagnostics
+	url = https://github.com/dotnet/diagnostics.git
