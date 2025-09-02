@@ -13,9 +13,10 @@ from abi import PVOID, PCSTR, HRESULT
 from services import GdbServices
 from tracing import TRACE_ENABLED, SOSTraceCommand
 
-# Default build artifact locations; users can override via env vars
-SOS_LIB_PATH = os.getenv("SOS_LIB_PATH", "/workspaces/diagnostics/artifacts/bin/linux.x64.Debug/libsos.so")
-BRIDGE_LIB_PATH = os.getenv("SOS_BRIDGE_LIB_PATH", "/workspaces/diagnostics/artifacts/bin/linux.x64.Debug/libsosgdbbridge.so")
+def _find_libsos() -> str | None:
+    """Locate libsos.so co-located with this script (same directory)."""
+    p = os.path.join(_THIS_DIR, "libsos.so")
+    return p if os.path.exists(p) else None
 
 # Common HRESULT hints for nicer error messages
 _HRES_HINTS = {
@@ -147,26 +148,37 @@ class SOSCommand(gdb.Command):
         if SOSCommand.sos_handle:
             return True
 
-        if not os.path.exists(SOS_LIB_PATH):
-            gdb.write(f"Error: SOS library not found at '{SOS_LIB_PATH}'.\n")
-            gdb.write("Please build the 'libsos' project and set SOS_LIB_PATH if needed.\n")
-            return False
-
         try:
+            # Load the bridge first from the same directory as this script
             if TRACE_ENABLED:
-                gdb.write("[sos] Loading libsos.so...\n")
-            SOSCommand.sos_handle = ctypes.CDLL(SOS_LIB_PATH)
+                gdb.write("[sos] Probing for libsosgdbbridge.so...\n")
+            _dl_mode = getattr(ctypes, 'RTLD_GLOBAL', None)
+            SOSCommand.bridge_handle = None
+            try:
+                local_bridge = os.path.join(_THIS_DIR, "libsosgdbbridge.so")
+                if os.path.exists(local_bridge):
+                    if TRACE_ENABLED:
+                        gdb.write(f"[sos] Loading bridge from '{local_bridge}'...\n")
+                    SOSCommand.bridge_handle = ctypes.CDLL(local_bridge, mode=_dl_mode) if _dl_mode is not None else ctypes.CDLL(local_bridge)
+            except Exception as e:
+                SOSCommand.bridge_handle = None
+                if TRACE_ENABLED:
+                    gdb.write(f"[sos] Bridge load note: {e}\n")
+
+            # Discover libsos strictly co-located with this script
+            libsos_path = _find_libsos()
+            if not libsos_path:
+                gdb.write("Error: Unable to locate libsos.so.\n")
+                gdb.write("Hint: copy libsos.so next to sos.py (diagnostics/artifacts/bin/current).\n")
+                return False
+
+            if TRACE_ENABLED:
+                gdb.write(f"[sos] Loading libsos from '{libsos_path}'...\n")
+            SOSCommand.sos_handle = ctypes.CDLL(libsos_path, mode=_dl_mode) if _dl_mode is not None else ctypes.CDLL(libsos_path)
+
             if TRACE_ENABLED:
                 gdb.write("[sos] Creating GdbServices...\n")
             SOSCommand.gdb_services = GdbServices()
-
-            # Prepare optional bridge (preferred) and libsos forwarders (fallback)
-            SOSCommand.bridge_handle = None
-            try:
-                if os.path.exists(BRIDGE_LIB_PATH):
-                    SOSCommand.bridge_handle = ctypes.CDLL(BRIDGE_LIB_PATH)
-            except Exception:
-                SOSCommand.bridge_handle = None
             # Optional libsos forwarders
             try:
                 SOSCommand.sos_init_hosting = SOSCommand.sos_handle.SOS_InitManagedHosting

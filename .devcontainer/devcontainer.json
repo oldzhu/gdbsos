@@ -34,13 +34,15 @@
   // This allows developers to just use 'dotnet build' on the command-line, and the local dotnet version will be used.
   // Add the global tools dir to the PATH so that globally installed tools will work
   "remoteEnv": {
-    "PATH": "${containerWorkspaceFolder}/.dotnet:${containerWorkspaceFolder}/.dotnet-tools-global:${containerEnv:PATH}",
-    "DOTNET_MULTILEVEL_LOOKUP": "0"
+    "PATH": "${containerWorkspaceFolder}/src/diagnostics/.dotnet:${containerWorkspaceFolder}/src/diagnostics/.dotnet/tools:${containerEnv:PATH}",
+    "DOTNET_MULTILEVEL_LOOKUP": "0",
+  "DOTNET_ROOT": "${containerWorkspaceFolder}/src/diagnostics/.dotnet"
   },
 
   // Comment out to connect as root instead. More info: https://aka.ms/vscode-remote/containers/non-root.
-  "remoteUser": "vscode"
-
-  "postStartCommand": "git submodule sync --recursive && git submodule update --init --recursive"
+  "remoteUser": "vscode",
+  // Ensure diagnostics native deps are present after container is created
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y liblttng-ust-dev",
+  "postStartCommand": "bash .devcontainer/post-start.sh"
 
 }

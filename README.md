@@ -2,15 +2,21 @@ gdbsos — GDB SOS plugin
 - src/gdbplugin/sos: Python plugin (GDB commands, services, ABI).
 - src/gdbplugin/bridge: Native bridge (CMake + bridge.cpp).
 - src/diagnostics: .NET diagnostics as a submodule.
+
 Usage
-- Build diagnostics; set SOS_LIB_PATH and SOS_BRIDGE_LIB_PATH to artifacts.
-- In GDB: source sos.py to register commands.
+- Build diagnostics, then build the bridge.
+- Co-location required: libsosgdbbridge.so must be next to diagnostics' libsos.so.
+- In GDB: source /path/to/src/diagnostics/artifacts/bin/current/sos.py to register commands.
 
 Dev Container
-- Requires VS Code Dev Containers extension.
 - Reopen folder in container; submodules sync/init runs automatically.
-- Optional: set BUILD_BRIDGE=1 and CMAKE_BUILD_TYPE=RelWithDebInfo to build bridge on start.
-- Default CMake generator: Ninja.
 - Manual build inside container:
-	- cmake -S src/gdbplugin/bridge -B build/bridge -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-	- cmake --build build/bridge --parallel
+	- ./build.sh -c Release
+
+Deploy options
+- Quick deploy for testing:
+	- scripts/deploy-bridge.sh [-c Debug|Release] [-a arch] [-d <diagnostics bin dir>]
+  Copies libsosgdbbridge.so next to diagnostics' libsos.so.
+- Build-time deploy:
+	- ./build.sh -c Release --deploy-to-diagnostics [--deploy-dir <path>]
+  Passes -DBRIDGE_DEPLOY_TO_DIAGNOSTICS=ON (and optional target dir) to CMake.

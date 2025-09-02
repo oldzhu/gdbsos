@@ -3,6 +3,7 @@ __pycache__/
 build/
 out/
 artifacts/
+obj/
 CMakeFiles/
 CMakeCache.txt
 *.dir/

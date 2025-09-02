@@ -638,7 +638,16 @@ class GdbServices:
 
     def lldb_disassemble(self, this_ptr, offset, flags, buffer, bufferSize, disSize, endOffset):
         trace("call into lldb_disassemble")
-        return 0x80004001
+        # Provide a fast-fail path to avoid hangs when SOS requests disassembly via ILLDBServices
+        # We don't integrate with LLDB disassembler here; return S_FALSE semantics with no data.
+        try:
+            if disSize:
+                disSize.contents.value = 0
+            if endOffset:
+                endOffset.contents.value = offset
+        except Exception:
+            pass
+        return 1
 
     def lldb_get_context_stack_trace(self, this_ptr, startContext, startContextSize, frames, framesSize, frameContexts, frameContextsSize, frameContextsEntrySize, framesFilled):
         trace("call into lldb_get_context_stack_trace")
