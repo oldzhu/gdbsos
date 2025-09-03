@@ -173,7 +173,7 @@ class ILLDBServicesVtbl(ctypes.Structure):
         ("GetProcessorType", ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.POINTER(ULONG))),
         ("Execute", ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG, PCSTR, ULONG)),
         ("GetLastEventInformation", ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.POINTER(ULONG), ctypes.POINTER(ULONG), ctypes.POINTER(ULONG), PVOID, ULONG, ctypes.POINTER(ULONG), ctypes.c_char_p, ULONG, ctypes.POINTER(ULONG))),
-        ("Disassemble", ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, ULONG, ctypes.c_char_p, ULONG, ctypes.POINTER(ULONG), ctypes.POINTER(ULONG64))),
+    ("Disassemble", ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, ULONG, ctypes.c_void_p, ULONG, ctypes.POINTER(ULONG), ctypes.POINTER(ULONG64))),
         ("GetContextStackTrace", ctypes.CFUNCTYPE(HRESULT, PVOID, PVOID, ULONG, PVOID, ULONG, PVOID, ULONG, ULONG, ctypes.POINTER(ULONG))),
         ("ReadVirtual", ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, PVOID, ULONG, ctypes.POINTER(ULONG))),
         ("WriteVirtual", ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, PVOID, ULONG, ctypes.POINTER(ULONG))),

@@ -3,9 +3,13 @@ import ctypes
 import os
 import sys
 import re
+from typing import Optional
 
-# Ensure this directory is on sys.path for sibling module imports
-_THIS_DIR = os.path.dirname(__file__)
+# Ensure this directory is absolute and on sys.path for sibling module imports
+try:
+    _THIS_DIR = os.path.dirname(os.path.realpath(__file__))
+except Exception:
+    _THIS_DIR = os.path.dirname(__file__)
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
@@ -13,10 +17,13 @@ from abi import PVOID, PCSTR, HRESULT
 from services import GdbServices
 from tracing import TRACE_ENABLED, SOSTraceCommand
 
-def _find_libsos() -> str | None:
+def _find_libsos() -> Optional[str]:
     """Locate libsos.so co-located with this script (same directory)."""
     p = os.path.join(_THIS_DIR, "libsos.so")
     return p if os.path.exists(p) else None
+
+# Try to detect a suitable .NET runtime directory for hosting (directory containing libcoreclr.so)
+## removed auto runtime detection for troubleshooting
 
 # Common HRESULT hints for nicer error messages
 _HRES_HINTS = {
@@ -139,6 +146,57 @@ class SOSCommand(gdb.Command):
         super(SOSCommand, self).__init__(name, gdb.COMMAND_DATA)
         self.name = name
         SOSCommand.lazy_load_sos()
+
+    # Track whether managed hosting was successfully initialized in this session
+    hosting_initialized: bool = False
+
+    @staticmethod
+    def _is_runtime_loaded() -> bool:
+        try:
+            # Use our services helper to detect libcoreclr.so in the target maps
+            if not hasattr(SOSCommand, 'gdb_services') or SOSCommand.gdb_services is None:
+                return False
+            path, base = SOSCommand.gdb_services._scan_coreclr()
+            return bool(path and base is not None)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _try_initialize_hosting_if_needed() -> bool:
+        """Initialize managed hosting once the target CLR is loaded. Returns True if ready."""
+        # Already initialized
+        if getattr(SOSCommand, 'hosting_initialized', False):
+            return True
+        # Only attempt when CLR is loaded in the target
+        if not SOSCommand._is_runtime_loaded():
+            # Defer with a clear message
+            gdb.write("Target .NET runtime isn't loaded yet; managed SOS commands will be available after CLR loads.\n")
+            return False
+        # Attempt to initialize via libsos forwarder first, then bridge
+        try:
+            hres = None
+            if getattr(SOSCommand, 'sos_init_hosting', None):
+                hres = SOSCommand.sos_init_hosting(None, 0)
+            elif getattr(SOSCommand, 'bridge_handle', None):
+                init_hosting = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
+                if init_hosting is not None:
+                    init_hosting.argtypes = [ctypes.c_char_p, ctypes.c_int]
+                    init_hosting.restype = ctypes.c_int
+                    hres = init_hosting(None, 0)
+            if hres == 0:
+                SOSCommand.hosting_initialized = True
+                gdb.write("Managed hosting initialized.\n")
+                return True
+            if hres is not None:
+                h32 = hres & 0xFFFFFFFF
+                hint = _hint_for_hresult(h32)
+                if hint:
+                    gdb.write(f"InitManagedHosting failed (HRESULT=0x{h32:08x}). {hint}\n")
+                else:
+                    gdb.write(f"InitManagedHosting failed (HRESULT=0x{h32:08x}).\n")
+        except Exception as e:
+            gdb.write(f"Error initializing hosting: {e}\n")
+        return False
 
     @staticmethod
     def lazy_load_sos():
@@ -268,6 +326,9 @@ class SOSCommand(gdb.Command):
             bridge = getattr(SOSCommand, 'bridge_handle', None)
             hres_bridge = None
             hosting_initialized = False
+            # Ensure hosting is initialized only when CLR is present, mirroring LLDB behavior
+            if not SOSCommand._try_initialize_hosting_if_needed():
+                return
             if bridge is not None:
                 try:
                     dispatch = bridge.DispatchManagedCommand
@@ -292,6 +353,7 @@ class SOSCommand(gdb.Command):
             # Try libsos forwarder as a fallback
             hres_forwarder = None
             try:
+                # Attempt forwarder only after trying bridge
                 if getattr(SOSCommand, 'sos_dispatch_managed', None):
                     hres_forwarder = SOSCommand.sos_dispatch_managed(cmd, args)
                     if hres_forwarder == 0:
@@ -376,6 +438,9 @@ class SosUmbrellaCommand(gdb.Command):
         args = rest.encode('utf-8')
         bridge = getattr(SOSCommand, 'bridge_handle', None)
         hres_bridge = None
+        # Initialize hosting lazily only when the CLR is loaded
+        if not SOSCommand._try_initialize_hosting_if_needed():
+            return
         try:
             if bridge is not None:
                 dispatch = bridge.DispatchManagedCommand

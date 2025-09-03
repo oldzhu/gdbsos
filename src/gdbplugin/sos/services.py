@@ -86,7 +86,7 @@ class GdbServices:
             ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.POINTER(ULONG))(self.lldb_get_processor_type),
             ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG, PCSTR, ULONG)(self.lldb_execute),
             ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.POINTER(ULONG), ctypes.POINTER(ULONG), ctypes.POINTER(ULONG), PVOID, ULONG, ctypes.POINTER(ULONG), ctypes.c_char_p, ULONG, ctypes.POINTER(ULONG))(self.lldb_get_last_event_information),
-            ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, ULONG, ctypes.c_char_p, ULONG, ctypes.POINTER(ULONG), ctypes.POINTER(ULONG64))(self.lldb_disassemble),
+            ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, ULONG, ctypes.c_void_p, ULONG, ctypes.POINTER(ULONG), ctypes.POINTER(ULONG64))(self.lldb_disassemble),
             ctypes.CFUNCTYPE(HRESULT, PVOID, PVOID, ULONG, PVOID, ULONG, PVOID, ULONG, ULONG, ctypes.POINTER(ULONG))(self.lldb_get_context_stack_trace),
             ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, PVOID, ULONG, ctypes.POINTER(ULONG))(self.lldb_read_virtual),
             ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, PVOID, ULONG, ctypes.POINTER(ULONG))(self.lldb_write_virtual),
@@ -638,16 +638,67 @@ class GdbServices:
 
     def lldb_disassemble(self, this_ptr, offset, flags, buffer, bufferSize, disSize, endOffset):
         trace("call into lldb_disassemble")
-        # Provide a fast-fail path to avoid hangs when SOS requests disassembly via ILLDBServices
-        # We don't integrate with LLDB disassembler here; return S_FALSE semantics with no data.
+        # Goal: never hang the caller. Either return one instruction text and advance endOffset,
+        # or return S_FALSE with endOffset advanced so the caller makes progress.
         try:
+            text = None
+            # Try using gdb to disassemble a single instruction at the given address.
+            try:
+                # Use x/1i to get one instruction; suppress pagination noise.
+                out = gdb.execute(f"x/1i 0x{int(offset):x}", to_string=True)
+                # Typical format: "0xADDRESS:\tOPCODE ...\n" – strip the leading address
+                if out:
+                    line = out.strip().splitlines()[0]
+                    # Split at first tab or colon space
+                    parts = line.split("\t", 1)
+                    if len(parts) == 2:
+                        text = parts[1]
+                    else:
+                        # Fallback: after colon
+                        cidx = line.find(":")
+                        text = line[cidx+1:].strip() if cidx >= 0 else line
+            except Exception:
+                text = None
+
+            written = 0
+            if text and buffer and bufferSize and bufferSize > 1:
+                try:
+                    bs = text.encode('utf-8', errors='replace')
+                    n = min(len(bs), max(0, int(bufferSize) - 1))
+                    if n > 0:
+                        dst = buffer if isinstance(buffer, int) else ctypes.cast(buffer, ctypes.c_void_p).value
+                        if dst:
+                            ctypes.memmove(dst, bs, n)
+                            ctypes.memmove(dst + n, b"\x00", 1)
+                            written = n
+                except Exception:
+                    written = 0
+
             if disSize:
-                disSize.contents.value = 0
+                disSize.contents.value = written
+
+            # Always advance by at least 1 byte to ensure forward progress if we can't decode size.
+            adv = 1
+            try:
+                # Try to infer instruction size by looking up next address from gdb output
+                # Not always available; keep minimal advancement.
+                pass
+            except Exception:
+                pass
             if endOffset:
-                endOffset.contents.value = offset
+                endOffset.contents.value = ctypes.c_uint64(int(offset) + adv).value
+            # Return S_OK if we wrote text, otherwise S_FALSE
+            return 0 if written > 0 else 1
         except Exception:
-            pass
-        return 1
+            # On any error, indicate no text but still advance to avoid infinite loops.
+            try:
+                if disSize:
+                    disSize.contents.value = 0
+                if endOffset:
+                    endOffset.contents.value = ctypes.c_uint64(int(offset) + 1).value
+            except Exception:
+                pass
+            return 1
 
     def lldb_get_context_stack_trace(self, this_ptr, startContext, startContextSize, frames, framesSize, frameContexts, frameContextsSize, frameContextsEntrySize, framesFilled):
         trace("call into lldb_get_context_stack_trace")

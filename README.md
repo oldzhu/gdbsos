@@ -1,4 +1,5 @@
 gdbsos — GDB SOS plugin
+[FAQ / Troubleshooting](docs/faq.md)
 - src/gdbplugin/sos: Python plugin (GDB commands, services, ABI).
 - src/gdbplugin/bridge: Native bridge (CMake + bridge.cpp).
 - src/diagnostics: .NET diagnostics as a submodule.
@@ -20,3 +21,5 @@ Deploy options
 - Build-time deploy:
 	- ./build.sh -c Release --deploy-to-diagnostics [--deploy-dir <path>]
   Passes -DBRIDGE_DEPLOY_TO_DIAGNOSTICS=ON (and optional target dir) to CMake.
+
+For troubleshooting and FAQs, see `docs/faq.md`.
