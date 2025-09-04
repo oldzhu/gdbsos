@@ -296,12 +296,47 @@ class SOSCommand(gdb.Command):
             return
 
         try:
+            # Clear any prior user-interrupt state at the beginning of a command
+            try:
+                if hasattr(SOSCommand, 'gdb_services') and SOSCommand.gdb_services is not None:
+                    SOSCommand.gdb_services.clear_interrupt()
+            except Exception:
+                pass
+            # For help/soshelp, prefer managed help when CLR is loaded for richer output
+            lower_name = self.name.lower()
+            if lower_name in ("help", "soshelp"):
+                # Attempt managed 'help' first when possible
+                if SOSCommand._is_runtime_loaded() and SOSCommand._try_initialize_hosting_if_needed():
+                    cmd = b"help"
+                    args = (arg or "").encode('utf-8')
+                    # Try bridge first
+                    try:
+                        bridge = getattr(SOSCommand, 'bridge_handle', None)
+                        if bridge is not None:
+                            dispatch = bridge.DispatchManagedCommand
+                            dispatch.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+                            dispatch.restype = ctypes.c_int
+                            hres = dispatch(cmd, args)
+                            if hres == 0:
+                                return
+                    except Exception:
+                        pass
+                    # Try libsos forwarder
+                    try:
+                        if getattr(SOSCommand, 'sos_dispatch_managed', None):
+                            hres2 = SOSCommand.sos_dispatch_managed(cmd, args)
+                            if hres2 == 0:
+                                return
+                    except Exception:
+                        pass
+                # Fallback to native path below
+
             # Prefer native exports first to avoid managed noise like "Unrecognized SOS command".
             # Resolve the exported SOS symbol for this command
 
             sos_func = None
             tried = []
-            for sym in _to_export_candidates_common(self.name.lower()):
+            for sym in _to_export_candidates_common(lower_name):
                 tried.append(sym)
                 try:
                     sos_func = getattr(SOSCommand.sos_handle, sym)
@@ -402,6 +437,37 @@ class SosUmbrellaCommand(gdb.Command):
             return
         name = parts[0].lower()
         rest = parts[1] if len(parts) > 1 else ""
+        # Clear any prior user-interrupt state at the beginning of an umbrella dispatch
+        try:
+            if hasattr(SOSCommand, 'gdb_services') and SOSCommand.gdb_services is not None:
+                SOSCommand.gdb_services.clear_interrupt()
+        except Exception:
+            pass
+
+        # For help/soshelp, prefer managed help when CLR is loaded
+        if name in ("help", "soshelp"):
+            if SOSCommand._is_runtime_loaded() and SOSCommand._try_initialize_hosting_if_needed():
+                cmd = b"help"
+                args = rest.encode('utf-8')
+                try:
+                    bridge = getattr(SOSCommand, 'bridge_handle', None)
+                    if bridge is not None:
+                        dispatch = bridge.DispatchManagedCommand
+                        dispatch.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+                        dispatch.restype = ctypes.c_int
+                        h = dispatch(cmd, args)
+                        if h == 0:
+                            return
+                except Exception:
+                    pass
+                try:
+                    if getattr(SOSCommand, 'sos_dispatch_managed', None):
+                        h2 = SOSCommand.sos_dispatch_managed(cmd, args)
+                        if h2 == 0:
+                            return
+                except Exception:
+                    pass
+            # Fall through to native resolution below if managed isn't available
 
         # Friendly notice for WinDbg/cdb-only commands
         if name in _UNSUPPORTED_WINDBG_ONLY:

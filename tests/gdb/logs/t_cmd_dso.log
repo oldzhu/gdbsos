@@ -1,0 +1,28 @@
+SOS GDB Python extension loaded and initialized successfully.
+test dumpil
+I would like to be inlined
+I would not like to be inlined
+
+Thread 1 "dotnet" hit Breakpoint 1, 0x00007ffff73a9434 in coreclr_execute_assembly () from /workspaces/gdbsos/src/diagnostics/.dotnet/shared/Microsoft.NETCore.App/8.0.15/libcoreclr.so
+[Inferior 1 (process 69158) exited normally]
+Traceback (most recent call last):
+  File "/workspaces/gdbsos/tests/gdb/gdbtestutils.py", line 88, in bpmd_and_continue
+    frame = gdb.newest_frame()
+gdb.error: No registers.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/workspaces/gdbsos/tests/gdb/gdbtestutils.py", line 126, in run
+    result = mod.runScenario(assembly_name)
+  File "/workspaces/gdbsos/tests/gdb/scenarios/t_cmd_dso.py", line 6, in runScenario
+    bpmd_and_continue(assemblyName)
+  File "/workspaces/gdbsos/tests/gdb/gdbtestutils.py", line 91, in bpmd_and_continue
+    assertTrue(False)
+  File "/workspaces/gdbsos/tests/gdb/gdbtestutils.py", line 39, in assertTrue
+    _assert_common(bool(x), fatal)
+  File "/workspaces/gdbsos/tests/gdb/gdbtestutils.py", line 35, in _assert_common
+    raise gdb.GdbError('Assertion failed')
+gdb.GdbError: Assertion failed
+Error while executing Python code.

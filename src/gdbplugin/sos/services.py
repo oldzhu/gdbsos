@@ -19,6 +19,22 @@ class GdbServices:
         # Cache of last known register context per system thread id to serve
         # offset queries without touching gdb APIs from foreign threads.
         self._context_cache = {}  # sysid -> { 'rip': int, 'rsp': int, 'rbp': int }
+        # Track if user interrupted output (e.g., pressed 'q' in pager)
+        self._interrupted = False
+        # Runtime-loaded callback/corresponding gdb breakpoint
+        self._runtime_loaded_cb = None
+        self._runtime_loaded_bp = None
+        # Exception callback registered by SOS (invoked on CLR notifications)
+        self._exception_cb = None
+        # Stop-event hook state
+        self._stop_hook_registered = False
+        self._in_stop = False
+        self._stop_handler = self._make_stop_handler()
+        # New objfile (shared library) hook to detect libcoreclr load
+        self._newobj_hook_registered = False
+        self._newobj_handler = self._make_newobj_handler()
+        # Track whether runtime-loaded callback has fired to avoid duplicates
+        self._runtime_loaded_fired = False
 
         iunknown_vtbl = IUnknownVtbl(QI_FUNC_TYPE(self.query_interface), ADDREF_FUNC_TYPE(self.add_ref), RELEASE_FUNC_TYPE(self.release))
 
@@ -310,6 +326,87 @@ class GdbServices:
         except Exception as ex:
             trace(f"_fill_amd64_dt_context error: {ex}")
 
+    # --- GDB stop hook wiring ---
+    def _make_stop_handler(self):
+        # Create a stable function object for connect/disconnect that calls back into this instance
+        def _on_stop(event):
+            try:
+                if self._in_stop:
+                    return
+                self._in_stop = True
+                # Only notify SOS when it registered a callback and CoreCLR is present
+                if not getattr(self, "_exception_cb", None):
+                    return
+                path, base = self._scan_coreclr()
+                if not path or base is None:
+                    return
+                ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
+                ecb = ctypes.cast(self._exception_cb, ETYPE)
+                hr = ecb(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
+                trace(f"[stop-hook] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
+            except Exception as ex:
+                trace(f"[stop-hook] error: {ex}")
+            finally:
+                self._in_stop = False
+        return _on_stop
+
+    # --- GDB new objfile hook wiring ---
+    def _make_newobj_handler(self):
+        def _on_newobj(event):
+            try:
+                # Try to get the filename from event
+                obj = getattr(event, 'new_objfile', None)
+                fname = getattr(obj, 'filename', None) if obj is not None else None
+                if not fname:
+                    return
+                if os.path.basename(fname) != 'libcoreclr.so':
+                    return
+                trace(f"[new-objfile] detected {fname}")
+                # Fire runtime-loaded and exception callbacks once
+                self._invoke_runtime_loaded_cb_once()
+                self._invoke_exception_cb_once()
+                # One-shot: we can disconnect this hook after firing
+                try:
+                    gdb.events.new_objfile.disconnect(self._newobj_handler)
+                    self._newobj_hook_registered = False
+                    trace("[new-objfile] disconnected")
+                except Exception:
+                    pass
+            except Exception as ex:
+                trace(f"[new-objfile] error: {ex}")
+        return _on_newobj
+
+    def _invoke_exception_cb_once(self):
+        try:
+            if not getattr(self, "_exception_cb", None):
+                return
+            path, base = self._scan_coreclr()
+            if not path or base is None:
+                return
+            ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
+            ecb = ctypes.cast(self._exception_cb, ETYPE)
+            hr = ecb(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
+            trace(f"[invoke] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
+        except Exception as ex:
+            trace(f"[invoke] exception-cb error: {ex}")
+
+    def _invoke_runtime_loaded_cb_once(self):
+        try:
+            if self._runtime_loaded_fired:
+                return
+            if not getattr(self, "_runtime_loaded_cb", None):
+                return
+            path, base = self._scan_coreclr()
+            if not path or base is None:
+                return
+            CBTYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
+            cb = ctypes.cast(self._runtime_loaded_cb, CBTYPE)
+            hr = cb(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
+            self._runtime_loaded_fired = True
+            trace(f"[invoke] RuntimeLoaded callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
+        except Exception as ex:
+            trace(f"[invoke] runtime-loaded-cb error: {ex}")
+
     # --- IMemoryService ---
     def read_virtual(self, this_ptr, address, buffer, bytes_requested, bytes_read_ptr):
         trace("call into read_virtual")
@@ -513,7 +610,86 @@ class GdbServices:
 
     def lldb2_set_runtime_loaded_callback(self, this_ptr, callback):
         trace("call into lldb2_set_runtime_loaded_callback")
-        return 0
+        try:
+            # Save the callback pointer
+            self._runtime_loaded_cb = callback
+
+            # If a breakpoint already exists, keep it
+            if self._runtime_loaded_bp is not None:
+                return 0
+
+            # Ensure pending breakpoints are allowed so the bp binds when coreclr loads
+            try:
+                gdb.execute('set breakpoint pending on', to_string=True)
+            except Exception:
+                pass
+
+            services_self = self
+
+            # Define a Python breakpoint that invokes the callback and continues execution
+            class _RuntimeLoadedBP(gdb.Breakpoint):
+                def stop(self_inner):
+                    try:
+                        # Cast callback and call with ILLDBServices* (as void*)
+                        if services_self._runtime_loaded_cb:
+                            CBTYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
+                            cb = ctypes.cast(services_self._runtime_loaded_cb, CBTYPE)
+                            hr = cb(ctypes.c_void_p(ctypes.addressof(services_self.illldb_ptr)))
+                            trace(f"RuntimeLoaded callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
+                        # Immediately trigger the exception callback once to process CLR notifications
+                        if getattr(services_self, "_exception_cb", None):
+                            ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
+                            ecb = ctypes.cast(services_self._exception_cb, ETYPE)
+                            ehr = ecb(ctypes.c_void_p(ctypes.addressof(services_self.illldb_ptr)))
+                            trace(f"Exception callback HR=0x{int(ehr) & 0xFFFFFFFF:08x}")
+                    except Exception as ex:
+                        trace(f"RuntimeLoaded callback error: {ex}")
+                    finally:
+                        # One-shot: delete breakpoint and continue
+                        try:
+                            self_inner.delete()
+                        except Exception:
+                            pass
+                    # Return False to auto-continue
+                    return False
+
+            # If CoreCLR is already loaded, fire immediately and skip installing the bp
+            self._invoke_runtime_loaded_cb_once()
+            if not self._runtime_loaded_fired:
+                # Also listen for lib loads in case symbol binding is delayed
+                if not self._newobj_hook_registered:
+                    try:
+                        gdb.events.new_objfile.connect(self._newobj_handler)
+                        self._newobj_hook_registered = True
+                        trace("[new-objfile] connected")
+                    except Exception as ex:
+                        trace(f"[new-objfile] connect error: {ex}")
+                # Create a pending breakpoint on the runtime entrypoint as a fallback
+                # but avoid duplicating if one already exists.
+                try:
+                    existing = False
+                    try:
+                        for bp in (gdb.breakpoints() or []):
+                            loc = getattr(bp, 'location', '') or ''
+                            if 'coreclr_execute_assembly' in loc:
+                                existing = True
+                                break
+                    except Exception:
+                        existing = False
+                    if existing:
+                        trace('[runtime-bp] skip: coreclr_execute_assembly breakpoint already exists')
+                    else:
+                        self._runtime_loaded_bp = _RuntimeLoadedBP('coreclr_execute_assembly')
+                except Exception:
+                    # Fallback to command if constructor fails
+                    try:
+                        gdb.execute('break coreclr_execute_assembly', to_string=True)
+                    except Exception as ex2:
+                        trace(f"[runtime-bp] failed to set fallback bp: {ex2}")
+            return 0
+        except Exception as ex:
+            trace(f"lldb2_set_runtime_loaded_callback error: {ex}")
+            return 0x80004005
 
     # --- ILLDBServices ---
     def lldb_get_coreclr_directory(self, this_ptr):
@@ -550,20 +726,98 @@ class GdbServices:
 
     def lldb_set_exception_callback(self, this_ptr, cb):
         trace("call into lldb_set_exception_callback")
-        return 0
+        try:
+            self._exception_cb = cb
+            # Ensure our stop hook is connected so SOS receives notifications on every stop
+            if not self._stop_hook_registered:
+                try:
+                    gdb.events.stop.connect(self._stop_handler)
+                    self._stop_hook_registered = True
+                    trace("[stop-hook] connected")
+                except Exception as ex:
+                    trace(f"[stop-hook] connect error: {ex}")
+            # Try to notify immediately if CoreCLR is already present
+            self._invoke_exception_cb_once()
+            # Also connect new-objfile hook to catch when CoreCLR loads later
+            if not self._newobj_hook_registered:
+                try:
+                    gdb.events.new_objfile.connect(self._newobj_handler)
+                    self._newobj_hook_registered = True
+                    trace("[new-objfile] connected")
+                except Exception as ex:
+                    trace(f"[new-objfile] connect error: {ex}")
+            # As a fallback, install a one-shot pending breakpoint on coreclr entry
+            # so we get a stop to deliver CLR notifications even if no other bps are set.
+            services_self = self
+            class _CoreClrEntryBP(gdb.Breakpoint):
+                def stop(self_inner):
+                    try:
+                        services_self._invoke_exception_cb_once()
+                    except Exception as _ex:
+                        trace(f"[entry-bp] error: {_ex}")
+                    finally:
+                        try:
+                            self_inner.delete()
+                        except Exception:
+                            pass
+                    return False
+            try:
+                # Avoid duplicating the user's existing runtime entry breakpoint
+                existing = False
+                try:
+                    for bp in (gdb.breakpoints() or []):
+                        loc = getattr(bp, 'location', '') or ''
+                        if 'coreclr_execute_assembly' in loc:
+                            existing = True
+                            break
+                except Exception:
+                    existing = False
+                if existing:
+                    trace('[entry-bp] skip: coreclr_execute_assembly breakpoint already exists')
+                else:
+                    _CoreClrEntryBP('coreclr_execute_assembly')
+                    trace('[entry-bp] breakpoint set on coreclr_execute_assembly')
+            except Exception:
+                try:
+                    gdb.execute('break coreclr_execute_assembly', to_string=True)
+                    trace('[entry-bp] break command issued for coreclr_execute_assembly')
+                except Exception as ex:
+                    trace(f"[entry-bp] failed to set breakpoint: {ex}")
+            return 0
+        except Exception:
+            return 0x80004005
 
     def lldb_clear_exception_callback(self, this_ptr):
         trace("call into lldb_clear_exception_callback")
+        self._exception_cb = None
+        # Disconnect the stop hook if connected
+        if self._stop_hook_registered:
+            try:
+                gdb.events.stop.disconnect(self._stop_handler)
+                self._stop_hook_registered = False
+                trace("[stop-hook] disconnected")
+            except Exception as ex:
+                trace(f"[stop-hook] disconnect error: {ex}")
+        # Disconnect new-objfile hook if connected
+        if self._newobj_hook_registered:
+            try:
+                gdb.events.new_objfile.disconnect(self._newobj_handler)
+                self._newobj_hook_registered = False
+                trace("[new-objfile] disconnected")
+            except Exception as ex:
+                trace(f"[new-objfile] disconnect error: {ex}")
         return 0
 
     def lldb_get_interrupt(self, this_ptr):
         trace("call into lldb_get_interrupt")
-        # Return S_FALSE semantics to indicate no interrupt
-        return 1
+        # Return S_OK (0) when interrupted, S_FALSE (1) otherwise
+        return 0 if getattr(self, "_interrupted", False) else 1
 
     def lldb_output_va_list(self, this_ptr, mask, fmt, va_list_ptr):
         trace("call into lldb_output_va_list")
         try:
+            if getattr(self, "_interrupted", False):
+                return 0
             libc = getattr(self, "_libc_handle", None)
             if libc is None:
                 try:
@@ -590,19 +844,33 @@ class GdbServices:
                 try:
                     gdb.write(buf.value.decode(errors='replace'))
                 except Exception:
-                    import sys
-                    sys.stdout.write(buf.value.decode(errors='replace'))
+                    try:
+                        import sys as _sys
+                        _sys.stdout.write(buf.value.decode(errors='replace'))
+                    except KeyboardInterrupt:
+                        self._interrupted = True
+                        return 0
+                    except Exception:
+                        pass
                 break
+        except KeyboardInterrupt:
+            self._interrupted = True
         except Exception:
             pass
         return 0
 
     def lldb_get_debuggee_type(self, this_ptr, debugClass, qualifier):
         trace("call into lldb_get_debuggee_type")
+        # Report a live session when we have a real OS PID; otherwise treat as dump.
+        # SOS uses Qualifier >= DEBUG_DUMP_SMALL to detect dumps (see IsDumpFile()).
         if debugClass:
             debugClass.contents.value = DEBUG_CLASS_USER_WINDOWS
         if qualifier:
-            qualifier.contents.value = DEBUG_DUMP_FULL
+            pid = self._get_pid()
+            if pid and pid > 0:
+                qualifier.contents.value = 0  # live user-mode
+            else:
+                qualifier.contents.value = DEBUG_DUMP_FULL
         return 0
 
     def lldb_get_page_size(self, this_ptr, size_ptr):
@@ -967,7 +1235,12 @@ class GdbServices:
 
     def dbg_output_string(self, this_ptr, mask, message):
         try:
+            if getattr(self, "_interrupted", False):
+                return
             gdb.write(message.decode() if isinstance(message, (bytes, bytearray)) else str(message))
+        except KeyboardInterrupt:
+            # User quit the pager; set interrupted and stop writing further
+            self._interrupted = True
         except Exception:
             pass
 
@@ -1132,7 +1405,12 @@ class GdbServices:
         self.dbg_output_string(this_ptr, mask, message)
 
     def dbg_flush_check(self, this_ptr):
+        # Optionally could be used to poll/clear; leave as no-op
         return None
+
+    # Helper to reset interrupt state at the start of each SOS command
+    def clear_interrupt(self):
+        self._interrupted = False
 
     def dbg_execute_host_command(self, this_ptr, commandLine, callback):
         return 0x80004001

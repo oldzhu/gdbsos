@@ -1,0 +1,20 @@
+new_suite: t_cmd_soshelp
+True
+False
+!!! test failed:
+!!!  /workspaces/gdbsos/tests/gdb/gdbtestutils.py:39
+!!!     _assert_common(bool(x), fatal)
+
+!!!  /workspaces/gdbsos/tests/gdb/gdbtestutils.py:91
+!!!         assertTrue(False)
+
+!!!  /workspaces/gdbsos/tests/gdb/scenarios/t_cmd_soshelp.py:10
+!!!     bpmd_and_continue(assemblyName)
+
+!!!  /workspaces/gdbsos/tests/gdb/gdbtestutils.py:126
+!!!     result = mod.runScenario(assembly_name)
+
+!!!  <string>:1
+!!! 
+!!! 
+Completed!
