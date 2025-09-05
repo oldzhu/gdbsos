@@ -149,6 +149,45 @@ class SOSCommand(gdb.Command):
 
     # Track whether managed hosting was successfully initialized in this session
     hosting_initialized: bool = False
+    # Queue bpmd requests issued before CLR loads; flushed on libcoreclr.so load
+    _bpmd_pending = []  # type: list[str]
+    _bpmd_hook_connected = False
+
+    @staticmethod
+    def _flush_pending_bpmd():
+        if not SOSCommand._bpmd_pending:
+            return
+        pend = list(SOSCommand._bpmd_pending)
+        SOSCommand._bpmd_pending.clear()
+        for args in pend:
+            try:
+                gdb.execute(f"sos bpmd {args}", to_string=True)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _connect_bpmd_defer_hook():
+        if SOSCommand._bpmd_hook_connected:
+            return
+        def _on_newobj(event):
+            try:
+                obj = getattr(event, 'new_objfile', None)
+                fname = getattr(obj, 'filename', None) if obj is not None else None
+                if not fname or os.path.basename(fname) != 'libcoreclr.so':
+                    return
+                # CLR just loaded: flush queued bpmd commands
+                SOSCommand._flush_pending_bpmd()
+            finally:
+                try:
+                    gdb.events.new_objfile.disconnect(_on_newobj)
+                except Exception:
+                    pass
+                SOSCommand._bpmd_hook_connected = False
+        try:
+            gdb.events.new_objfile.connect(_on_newobj)
+            SOSCommand._bpmd_hook_connected = True
+        except Exception:
+            SOSCommand._bpmd_hook_connected = False
 
     @staticmethod
     def _is_runtime_loaded() -> bool:
@@ -304,6 +343,13 @@ class SOSCommand(gdb.Command):
                 pass
             # For help/soshelp, prefer managed help when CLR is loaded for richer output
             lower_name = self.name.lower()
+            # LLDB-compatible bpmd behavior: if issued before CLR loads, queue and
+            # re-dispatch after libcoreclr.so loads to avoid early DAC init/crash
+            if lower_name == "bpmd" and not SOSCommand._is_runtime_loaded():
+                if arg and arg.strip():
+                    SOSCommand._bpmd_pending.append(arg.strip())
+                SOSCommand._connect_bpmd_defer_hook()
+                return
             if lower_name in ("help", "soshelp"):
                 # Attempt managed 'help' first when possible
                 if SOSCommand._is_runtime_loaded() and SOSCommand._try_initialize_hosting_if_needed():
@@ -444,6 +490,15 @@ class SosUmbrellaCommand(gdb.Command):
         except Exception:
             pass
 
+        # LLDB-compatible bpmd deferral in umbrella form: if CLR not loaded, queue
+        # the args and re-dispatch after libcoreclr.so loads.
+        if name == "bpmd" and not SOSCommand._is_runtime_loaded():
+            if rest and rest.strip():
+                SOSCommand._bpmd_pending.append(rest.strip())
+            SOSCommand._connect_bpmd_defer_hook()
+            return
+
+        
         # For help/soshelp, prefer managed help when CLR is loaded
         if name in ("help", "soshelp"):
             if SOSCommand._is_runtime_loaded() and SOSCommand._try_initialize_hosting_if_needed():
