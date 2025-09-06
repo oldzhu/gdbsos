@@ -5,7 +5,7 @@ import gdb
 
 # Allow importing when sourced directly (sos.py adjusts sys.path similarly)
 from abi import *
-from tracing import TRACE_ENABLED, trace
+from tracing import TRACE_ENABLED, trace, trace_cat
 
 
 class GdbServices:
@@ -142,6 +142,62 @@ class GdbServices:
         self.illldb_ptr = ILLDBServices(ctypes.pointer(self._illldb_vtbl))
         self.illldb2_ptr = ILLDBServices2(ctypes.pointer(self._illldb2_vtbl))
         self._registered_debugger = None
+        # Guard to avoid re-entrant or repeated continues
+        self._continue_pending = False
+
+        # Proactively connect new-objfile hook so we never miss libcoreclr.so load
+        # even if SOS registers callbacks later. This handler is one-shot and
+        # will disconnect itself after firing.
+        try:
+            if not self._newobj_hook_registered:
+                gdb.events.new_objfile.connect(self._newobj_handler)
+                self._newobj_hook_registered = True
+                trace_cat('bpmd', '[new-objfile] connected (early)')
+        except Exception:
+            pass
+
+    def _schedule_safe_continue(self):
+        """Schedule a safe 'continue' outside of callback context to avoid
+        'program is already running' errors. Uses gdb.post_event and a guard."""
+        try:
+            if self._continue_pending:
+                return
+            self._continue_pending = True
+
+            def _do_continue():
+                try:
+                    # Best-effort: issue continue; errors are traced but ignored.
+                    gdb.execute('continue', to_string=True)
+                    trace_cat('bpmd', '[continue] issued via post_event')
+                except Exception as ex:
+                    trace(f"[continue] error: {ex}")
+                finally:
+                    self._continue_pending = False
+
+            gdb.post_event(_do_continue)
+        except Exception as ex:
+            trace(f"_schedule_safe_continue error: {ex}")
+
+    def _set_one_shot_pc_breakpoint(self):
+        """Install a temporary breakpoint at the current PC to guarantee
+        one more stop immediately after we auto-continue. This helps SOS's
+        exception callback observe CLR notifications (Option A path).
+        """
+        try:
+            pc_val = int(gdb.parse_and_eval("$pc"))
+            try:
+                # Prefer a command to ensure true temporary behavior across gdb versions
+                gdb.execute(f"tbreak *0x{pc_val:x}", to_string=True)
+                trace_cat('bpmd', f"[one-shot] tbreak set at *0x{pc_val:x}")
+            except Exception:
+                # Fallback to Python API if available
+                try:
+                    gdb.Breakpoint(f"*0x{pc_val:x}", temporary=True)
+                    trace_cat('bpmd', f"[one-shot] python temporary Breakpoint at *0x{pc_val:x}")
+                except Exception as ex2:
+                    trace(f"[one-shot] failed to set temporary bp: {ex2}")
+        except Exception as ex:
+            trace(f"[one-shot] could not determine $pc: {ex}")
 
     def _is_core_dump_session(self) -> bool:
         """Detect if the current GDB session is a real core dump debugging session.
@@ -364,7 +420,7 @@ class GdbServices:
                 ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
                 ecb = ctypes.cast(self._exception_cb, ETYPE)
                 hr = ecb(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
-                trace(f"[stop-hook] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
+                trace_cat('bpmd', f"[stop-hook] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
             except Exception as ex:
                 trace(f"[stop-hook] error: {ex}")
             finally:
@@ -382,10 +438,13 @@ class GdbServices:
                     return
                 if os.path.basename(fname) != 'libcoreclr.so':
                     return
-                trace(f"[new-objfile] detected {fname}")
+                trace_cat('bpmd', f"[new-objfile] detected {fname}")
                 # Fire runtime-loaded and exception callbacks once
                 self._invoke_runtime_loaded_cb_once()
                 self._invoke_exception_cb_once()
+                # Ensure one additional stop after we auto-continue so the
+                # exception callback can observe CLR notifications.
+                self._set_one_shot_pc_breakpoint()
                 # One-shot: we can disconnect this hook after firing
                 try:
                     gdb.events.new_objfile.disconnect(self._newobj_handler)
@@ -407,7 +466,7 @@ class GdbServices:
             ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
             ecb = ctypes.cast(self._exception_cb, ETYPE)
             hr = ecb(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
-            trace(f"[invoke] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
+            trace_cat('bpmd', f"[invoke] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
         except Exception as ex:
             trace(f"[invoke] exception-cb error: {ex}")
 
@@ -424,7 +483,7 @@ class GdbServices:
             cb = ctypes.cast(self._runtime_loaded_cb, CBTYPE)
             hr = cb(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
             self._runtime_loaded_fired = True
-            trace(f"[invoke] RuntimeLoaded callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
+            trace_cat('bpmd', f"RuntimeLoaded callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
         except Exception as ex:
             trace(f"[invoke] runtime-loaded-cb error: {ex}")
 
@@ -630,10 +689,11 @@ class GdbServices:
         return 0x80004001
 
     def lldb2_set_runtime_loaded_callback(self, this_ptr, callback):
-        trace("call into lldb2_set_runtime_loaded_callback")
+        trace_cat('bpmd', 'call into lldb2_set_runtime_loaded_callback')
         try:
             # Save the callback pointer
             self._runtime_loaded_cb = callback
+            trace_cat('bpmd', 'runtime-loaded cb registered')
 
             # If a breakpoint already exists, keep it
             if self._runtime_loaded_bp is not None:
@@ -663,6 +723,9 @@ class GdbServices:
                             ecb = ctypes.cast(services_self._exception_cb, ETYPE)
                             ehr = ecb(ctypes.c_void_p(ctypes.addressof(services_self.illldb_ptr)))
                             trace(f"Exception callback HR=0x{int(ehr) & 0xFFFFFFFF:08x}")
+                        # Schedule a guaranteed follow-up stop via a temporary
+                        # breakpoint at the current PC before we auto-continue.
+                        services_self._set_one_shot_pc_breakpoint()
                     except Exception as ex:
                         trace(f"RuntimeLoaded callback error: {ex}")
                     finally:
@@ -746,9 +809,10 @@ class GdbServices:
         return 0
 
     def lldb_set_exception_callback(self, this_ptr, cb):
-        trace("call into lldb_set_exception_callback")
+        trace_cat('bpmd', 'call into lldb_set_exception_callback')
         try:
             self._exception_cb = cb
+            trace_cat('bpmd', 'exception cb registered')
             # Ensure our stop hook is connected so SOS receives notifications on every stop
             if not self._stop_hook_registered:
                 try:
@@ -759,6 +823,13 @@ class GdbServices:
                     trace(f"[stop-hook] connect error: {ex}")
             # Try to notify immediately if CoreCLR is already present
             self._invoke_exception_cb_once()
+            try:
+                path, _ = self._scan_coreclr()
+                if path:
+                    # Guarantee a follow-up stop so stop-hook keeps pumping notifications
+                    self._set_one_shot_pc_breakpoint()
+            except Exception:
+                pass
             # Also connect new-objfile hook to catch when CoreCLR loads later
             if not self._newobj_hook_registered:
                 try:
@@ -911,10 +982,16 @@ class GdbServices:
         try:
             cmd = command.decode() if command else ""
             if cmd and TRACE_ENABLED:
-                gdb.write(f"[ILLDBServices.Execute] {cmd}\n")
+                low = (cmd or '').strip().lower()
+                if low.startswith('breakpoint set') or low.startswith('process continue'):
+                    gdb.write(f"[ILLDBServices.Execute] {cmd}\n")
             # Map a minimal subset of LLDB host commands used by SOS to GDB
             text = (cmd or '').strip()
             lower = text.lower()
+            # 0) process continue => schedule a GDB continue safely
+            if lower == 'process continue' or lower.startswith('process continue'):
+                self._schedule_safe_continue()
+                return 0
             # 1) breakpoint set --address 0xADDR => break *0xADDR
             if lower.startswith('breakpoint set') and '--address' in lower:
                 try:
