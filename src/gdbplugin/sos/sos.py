@@ -154,6 +154,39 @@ class SOSCommand(gdb.Command):
     _bpmd_hook_connected = False
 
     @staticmethod
+    def _ensure_runtime_entry_breakpoint():
+        """Ensure a pending breakpoint on coreclr_execute_assembly exists.
+        Mirrors LLDB behavior where bpmd pre-CLR plants a pending runtime entry bp.
+        """
+        try:
+            # Allow pending breakpoints so symbols can resolve when libcoreclr loads
+            try:
+                gdb.execute('set breakpoint pending on', to_string=True)
+            except Exception:
+                pass
+            # Avoid duplicates
+            try:
+                for bp in (gdb.breakpoints() or []):
+                    loc = getattr(bp, 'location', '') or ''
+                    if 'coreclr_execute_assembly' in loc:
+                        return
+            except Exception:
+                pass
+            # Prefer the command path to honor pending behavior consistently
+            try:
+                gdb.execute('break coreclr_execute_assembly', to_string=True)
+                if TRACE_ENABLED:
+                    gdb.write('[bpmd] planted pending bp on coreclr_execute_assembly\n')
+            except Exception:
+                # Fallback: attempt via Python API
+                try:
+                    gdb.Breakpoint('coreclr_execute_assembly')
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    @staticmethod
     def _flush_pending_bpmd():
         if not SOSCommand._bpmd_pending:
             return
@@ -343,13 +376,10 @@ class SOSCommand(gdb.Command):
                 pass
             # For help/soshelp, prefer managed help when CLR is loaded for richer output
             lower_name = self.name.lower()
-            # LLDB-compatible bpmd behavior: if issued before CLR loads, queue and
-            # re-dispatch after libcoreclr.so loads to avoid early DAC init/crash
-            if lower_name == "bpmd" and not SOSCommand._is_runtime_loaded():
-                if arg and arg.strip():
-                    SOSCommand._bpmd_pending.append(arg.strip())
-                SOSCommand._connect_bpmd_defer_hook()
-                return
+            # LLDB-aligned: deliver bpmd immediately even if CLR not loaded
+            # (libsos native export path will set runtime callbacks/pending bp if supported).
+            # No pre-CLR queuing or local pending bp planting here.
+            # We simply fall through to dispatch below.
             if lower_name in ("help", "soshelp"):
                 # Attempt managed 'help' first when possible
                 if SOSCommand._is_runtime_loaded() and SOSCommand._try_initialize_hosting_if_needed():
@@ -490,13 +520,8 @@ class SosUmbrellaCommand(gdb.Command):
         except Exception:
             pass
 
-        # LLDB-compatible bpmd deferral in umbrella form: if CLR not loaded, queue
-        # the args and re-dispatch after libcoreclr.so loads.
-        if name == "bpmd" and not SOSCommand._is_runtime_loaded():
-            if rest and rest.strip():
-                SOSCommand._bpmd_pending.append(rest.strip())
-            SOSCommand._connect_bpmd_defer_hook()
-            return
+    # LLDB-aligned: deliver bpmd immediately even if CLR not loaded.
+    # No pre-CLR queuing or local pending bp planting here; fall through to dispatch.
 
         
         # For help/soshelp, prefer managed help when CLR is loaded

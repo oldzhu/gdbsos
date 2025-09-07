@@ -16,7 +16,7 @@ Dev Container
 
 Deploy options
 - Quick deploy for testing:
-	- scripts/deploy-bridge.sh [-c Debug|Release] [-a arch] [-d <diagnostics bin dir>]
+	- scripts/deploy-all.sh [-c Debug|Release] [-a arch] [-d <diagnostics bin dir>]
   Copies libsosgdbbridge.so next to diagnostics' libsos.so.
 - Build-time deploy:
 	- ./build.sh -c Release --deploy-to-diagnostics [--deploy-dir <path>]
