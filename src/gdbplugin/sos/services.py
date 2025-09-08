@@ -158,6 +158,12 @@ class GdbServices:
         except Exception:
             pass
 
+        # Disable pagination to avoid interactive prompts that block auto-continue
+        try:
+            gdb.execute('set pagination off', to_string=True)
+        except Exception:
+            pass
+
     def _schedule_safe_continue(self):
         """Schedule a safe 'continue' outside of callback context to avoid
         'program is already running' errors. Uses gdb.post_event and a guard."""
@@ -357,6 +363,26 @@ class GdbServices:
         except Exception:
             return []
 
+    def _canon_modname(self, name: str) -> str:
+        """Return a canonical module name without platform-specific prefix/suffix.
+        Examples:
+          'libcoreclr.so' -> 'coreclr'
+          'coreclr.dll'   -> 'coreclr'
+          'libmscordaccore.so' -> 'mscordaccore'
+        """
+        try:
+            n = (name or '').lower()
+            n = os.path.basename(n)
+            if n.startswith('lib'):
+                n = n[3:]
+            if n.endswith('.so'):
+                n = n[:-3]
+            if n.endswith('.dll'):
+                n = n[:-4]
+            return n
+        except Exception:
+            return (name or '').lower()
+
     def _thread_sysid(self, thread: gdb.InferiorThread):
         try:
             ptid = thread.ptid  # (pid, lwpid, tid?)
@@ -465,17 +491,22 @@ class GdbServices:
                                     CBTYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
                                     cb = ctypes.cast(self._runtime_loaded_cb, CBTYPE)
                                     hr = cb(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
-                                    self._runtime_loaded_fired = True
-                                    trace_cat('bpmd', f"[stop-hook] runtime-loaded via entry HR=0x{int(hr) & 0xFFFFFFFF:08x}")
-                                    # Immediately pump exception notifications once to trigger binding
-                                    if getattr(self, "_exception_cb", None):
-                                        try:
-                                            ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
-                                            ecb2 = ctypes.cast(self._exception_cb, ETYPE)
-                                            ehr2 = ecb2(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
-                                            trace_cat('bpmd', f"[stop-hook] exception after runtime-loaded HR=0x{int(ehr2) & 0xFFFFFFFF:08x}")
-                                        except Exception as ex2:
-                                            trace(f"[stop-hook] post-runtime exception invoke error: {ex2}")
+                                    h = int(hr) & 0xFFFFFFFF
+                                    trace_cat('bpmd', f"[stop-hook] runtime-loaded via entry HR=0x{h:08x}")
+                                    if h == 0:
+                                        self._runtime_loaded_fired = True
+                                        # Immediately pump exception notifications once to trigger binding
+                                        if getattr(self, "_exception_cb", None):
+                                            try:
+                                                ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
+                                                ecb2 = ctypes.cast(self._exception_cb, ETYPE)
+                                                ehr2 = ecb2(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
+                                                trace_cat('bpmd', f"[stop-hook] exception after runtime-loaded HR=0x{int(ehr2) & 0xFFFFFFFF:08x}")
+                                                # Schedule a safe continue so we don't present a stop here
+                                                self._schedule_safe_continue()
+                                                return
+                                            except Exception as ex2:
+                                                trace(f"[stop-hook] post-runtime exception invoke error: {ex2}")
                             except Exception as rex:
                                 trace(f"[stop-hook] runtime-loaded invoke error: {rex}")
                         else:
@@ -513,9 +544,8 @@ class GdbServices:
                 if os.path.basename(fname) != 'libcoreclr.so':
                     return
                 trace_cat('bpmd', f"[new-objfile] detected {fname}")
-                # Do not invoke runtime-loaded/exception callbacks here; defer until the
-                # coreclr_execute_assembly entry breakpoint to avoid premature DAC loads.
-                # Do not auto-continue here; SOS will issue 'process continue' via Execute.
+                # Do not invoke runtime-loaded/exception callbacks here; defer until
+                # coreclr_execute_assembly is hit to avoid early DAC loads.
                 # One-shot: we can disconnect this hook after firing
                 try:
                     gdb.events.new_objfile.disconnect(self._newobj_handler)
@@ -789,18 +819,20 @@ class GdbServices:
                             CBTYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
                             cb = ctypes.cast(services_self._runtime_loaded_cb, CBTYPE)
                             hr = cb(ctypes.c_void_p(ctypes.addressof(services_self.illldb_ptr)))
-                            trace(f"RuntimeLoaded callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
-                            services_self._runtime_loaded_fired = True
+                            h = int(hr) & 0xFFFFFFFF
+                            trace(f"RuntimeLoaded callback HR=0x{h:08x}")
+                            if h == 0:
+                                services_self._runtime_loaded_fired = True
                         # Immediately trigger the exception callback once to process CLR notifications
-                        if getattr(services_self, "_exception_cb", None):
+                        if getattr(services_self, "_exception_cb", None) and services_self._runtime_loaded_fired:
                             ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
                             ecb = ctypes.cast(services_self._exception_cb, ETYPE)
                             ehr = ecb(ctypes.c_void_p(ctypes.addressof(services_self.illldb_ptr)))
                             trace(f"Exception callback HR=0x{int(ehr) & 0xFFFFFFFF:08x}")
                     except Exception as ex:
                         trace(f"RuntimeLoaded callback error: {ex}")
-                    # Return True to present a stop; SOS will drive the continue via Execute('process continue').
-                    return True
+                    # Return False to auto-continue; we already primed callbacks.
+                    return False
 
             # Listen for lib loads in case symbol binding is delayed
             if not self._newobj_hook_registered:
@@ -841,10 +873,9 @@ class GdbServices:
     def lldb_get_coreclr_directory(self, this_ptr):
         trace("call into lldb_get_coreclr_directory")
         try:
-            # Only expose CoreCLR directory after runtime initialized to avoid early DAC load
-            if not getattr(self, "_runtime_initialized", False):
-                trace("coreclr directory: gated until runtime entry hit")
-                return None
+            # Expose CoreCLR directory as soon as libcoreclr.so is mapped.
+            # Do not strictly gate on runtime entry; LLDB returns the path
+            # whenever the module is present, and SOS may query this early.
             path, base = self._scan_coreclr()
             if path and self._coreclr_dir_buf:
                 trace(f"coreclr directory: {os.path.dirname(path)} base=0x{base:x}")
@@ -1011,15 +1042,8 @@ class GdbServices:
             lower = text.lower()
             # 0) process continue => schedule a GDB continue safely
             if lower == 'process continue' or lower.startswith('process continue'):
-                # Avoid issuing a continue if GDB is in the middle of dispatching a stop
-                # or if we already have a pending continue scheduled.
+                # Only guard against duplicate pending continues; allow from callbacks.
                 try:
-                    if getattr(self, '_in_stop', False):
-                        trace('[execute] continue suppressed: in stop handler')
-                        return 1  # S_FALSE
-                    if getattr(self, '_in_exception_callback', False):
-                        trace('[execute] continue suppressed: in exception callback')
-                        return 1  # S_FALSE
                     if getattr(self, '_continue_pending', False):
                         trace('[execute] continue suppressed: continue already pending')
                         return 1  # S_FALSE
@@ -1183,7 +1207,19 @@ class GdbServices:
         base_name = os.path.basename(path)
         if startIndex > 0:
             return 0x80004005
-        if not q or q.lower() in base_name.lower():
+        # Match on canonical (platform-agnostic) names too so 'coreclr.dll' matches 'libcoreclr.so'
+        if not q:
+            match = True
+        else:
+            canon_q = self._canon_modname(q)
+            canon_base = self._canon_modname(base_name)
+            match = (
+                q.lower() in base_name.lower() or
+                canon_q == canon_base or
+                canon_q in canon_base or
+                canon_base in canon_q
+            )
+        if match:
             if index:
                 index.contents.value = 0
             if base:
@@ -1400,7 +1436,17 @@ class GdbServices:
         try:
             if getattr(self, "_interrupted", False):
                 return
-            gdb.write(message.decode() if isinstance(message, (bytes, bytearray)) else str(message))
+            msg = message.decode() if isinstance(message, (bytes, bytearray)) else str(message)
+            # Suppress noisy early messages before runtime entry is hit
+            if not getattr(self, "_runtime_initialized", False):
+                suppressed = (
+                    "Failed to find runtime module (libcoreclr.so)" in msg or
+                    "Extension commands need it in order to have something to do." in msg or
+                    "https://go.microsoft.com/fwlink/?linkid=2135652" in msg
+                )
+                if suppressed:
+                    return
+            gdb.write(msg)
         except KeyboardInterrupt:
             # User quit the pager; set interrupted and stop writing further
             self._interrupted = True

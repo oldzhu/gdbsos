@@ -154,6 +154,37 @@ class SOSCommand(gdb.Command):
     _bpmd_hook_connected = False
 
     @staticmethod
+    def _ensure_hosting_for_bpmd():
+        """Ensure managed hosting (host CLR in debugger process) is initialized
+        before executing bpmd so SOS can set up its managed components similarly
+        to the LLDB plugin. This is independent of the target CLR state and
+        does not load DAC; DAC remains gated by runtime entry in services.py.
+        """
+        try:
+            if getattr(SOSCommand, 'hosting_initialized', False):
+                return True
+            hres = None
+            if getattr(SOSCommand, 'sos_init_hosting', None):
+                hres = SOSCommand.sos_init_hosting(None, 0)
+            elif getattr(SOSCommand, 'bridge_handle', None):
+                init_hosting = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
+                if init_hosting is not None:
+                    init_hosting.argtypes = [ctypes.c_char_p, ctypes.c_int]
+                    init_hosting.restype = ctypes.c_int
+                    hres = init_hosting(None, 0)
+            if hres == 0:
+                SOSCommand.hosting_initialized = True
+                if TRACE_ENABLED:
+                    gdb.write("[sos] Managed hosting initialized for bpmd.\n")
+                return True
+            if hres is not None and TRACE_ENABLED:
+                gdb.write(f"[sos] Managed hosting init for bpmd failed HRESULT=0x{hres:08x}.\n")
+        except Exception as e:
+            if TRACE_ENABLED:
+                gdb.write(f"[sos] Managed hosting init for bpmd error: {e}\n")
+        return False
+
+    @staticmethod
     def _ensure_runtime_entry_breakpoint():
         """Ensure a pending breakpoint on coreclr_execute_assembly exists.
         Mirrors LLDB behavior where bpmd pre-CLR plants a pending runtime entry bp.
@@ -328,13 +359,23 @@ class SOSCommand(gdb.Command):
                 gdb.write("[sos] Resolving SOSInitializeByHost...\n")
             init_func = SOSCommand.sos_handle.SOSInitializeByHost
             if TRACE_ENABLED:
-                gdb.write("[sos] Calling SOSInitializeByHost(NULL, IDebuggerServices) ...\n")
+                try:
+                    ihost_addr = ctypes.addressof(SOSCommand.gdb_services.ihost_ptr)
+                except Exception:
+                    ihost_addr = 0
+                try:
+                    idebugger_addr = ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr)
+                except Exception:
+                    idebugger_addr = 0
+                gdb.write(f"[sos] Calling SOSInitializeByHost(IHost=0x{ihost_addr:x}, IDebuggerServices=0x{idebugger_addr:x}) ...\n")
 
             # SOSInitializeByHost(IUnknown* punk, IDebuggerServices* debuggerServices)
+            # Pass our IHost implementation as the first argument (not NULL) so SOS can
+            # obtain HostServices and set up notifications like the LLDB plugin.
             init_func.argtypes = [PVOID, PVOID]
             init_func.restype = HRESULT
 
-            hr = init_func(ctypes.c_void_p(0), ctypes.byref(SOSCommand.gdb_services.idebugger_ptr))
+            hr = init_func(ctypes.byref(SOSCommand.gdb_services.ihost_ptr), ctypes.byref(SOSCommand.gdb_services.idebugger_ptr))
 
             if hr != 0:
                 gdb.write(f"SOSInitializeByHost failed with HRESULT {hr}.\n")
@@ -351,7 +392,8 @@ class SOSCommand(gdb.Command):
                         init_ext.restype = ctypes.c_int
                         idebugger_ptr_addr = ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr)
                         init_ext(ctypes.c_void_p(idebugger_ptr_addr))
-                # Do not call InitManagedHosting here to avoid early managed assertion before target state is ready
+                # Do not initialize managed hosting here to avoid loading DAC/host CLR
+                # before the target runtime is at a safe point.
             except Exception as e:
                 if TRACE_ENABLED:
                     gdb.write(f"[sos] Bridge InitGdbExtensions note: {e}\n")
@@ -420,6 +462,9 @@ class SOSCommand(gdb.Command):
                 except AttributeError:
                     continue
             if sos_func is not None:
+                # Initialize host managed hosting when running bpmd (LLDB parity)
+                if lower_name == 'bpmd':
+                    SOSCommand._ensure_hosting_for_bpmd()
                 sos_func.argtypes = [PVOID, PCSTR]
                 sos_func.restype = HRESULT
 
