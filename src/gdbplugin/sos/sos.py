@@ -375,7 +375,10 @@ class SOSCommand(gdb.Command):
             init_func.argtypes = [PVOID, PVOID]
             init_func.restype = HRESULT
 
-            hr = init_func(ctypes.byref(SOSCommand.gdb_services.ihost_ptr), ctypes.byref(SOSCommand.gdb_services.idebugger_ptr))
+            # Gate host path to avoid regressions while ITarget/IRuntime are stubbed.
+            use_host = os.environ.get('SOS_GDB_USE_HOST', '0') not in ('', '0', 'false', 'False')
+            host_arg = ctypes.byref(SOSCommand.gdb_services.ihost_ptr) if use_host else None
+            hr = init_func(host_arg, ctypes.byref(SOSCommand.gdb_services.idebugger_ptr))
 
             if hr != 0:
                 gdb.write(f"SOSInitializeByHost failed with HRESULT {hr}.\n")
@@ -398,7 +401,10 @@ class SOSCommand(gdb.Command):
                 if TRACE_ENABLED:
                     gdb.write(f"[sos] Bridge InitGdbExtensions note: {e}\n")
 
-            gdb.write("SOS GDB Python extension loaded and initialized successfully.\n")
+            if use_host:
+                gdb.write("SOS GDB Python extension loaded (host path enabled).\n")
+            else:
+                gdb.write("SOS GDB Python extension loaded (host path disabled; set SOS_GDB_USE_HOST=1 to enable).\n")
             return True
         except Exception as e:
             gdb.write(f"Error loading or initializing libsos.so: {e}\n")

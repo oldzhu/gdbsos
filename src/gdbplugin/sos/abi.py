@@ -7,6 +7,7 @@ ULONG64 = ctypes.c_uint64
 PVOID = ctypes.c_void_p
 CHAR = ctypes.c_char
 PCSTR = ctypes.c_char_p
+LPCWSTR = ctypes.c_wchar_p
 
 # GUID
 class GUID(ctypes.Structure):
@@ -25,6 +26,11 @@ IID_IHost = GUID(0xE0CD8534, 0xA88B, 0x40D7, (0x91, 0xBA, 0x1B, 0x4C, 0x92, 0x57
 IID_ILLDBServices2 = GUID(0x012F32F0, 0x33BA, 0x4E8E, (0xBC, 0x01, 0x03, 0x7D, 0x38, 0x2D, 0x8A, 0x5E))
 IID_ILLDBServices = GUID(0x2E6C569A, 0x9E14, 0x4DA4, (0x9D, 0xFC, 0xCD, 0xB7, 0x3A, 0x53, 0x25, 0x66))
 IID_IHostServices = GUID(0x27B2CB8D, 0xBDEE, 0x4CBD, (0xB6, 0xEF, 0x75, 0x88, 0x0D, 0x76, 0xD4, 0x6F))
+IID_ICLRDataTarget = GUID(0x3E11CCEE, 0xD08B, 0x43E5, (0xAF, 0x01, 0x32, 0x71, 0x7A, 0x64, 0xDA, 0x03))
+IID_ICLRDataTarget2 = GUID(0x6D05FAE3, 0x189C, 0x4630, (0xA6, 0xDC, 0x1C, 0x25, 0x1E, 0x1C, 0x01, 0xAB))
+IID_ICLRMetadataLocator = GUID(0xAA8FA804, 0xBC05, 0x4642, (0xB2, 0xC5, 0xC3, 0x53, 0xED, 0x22, 0xFC, 0x63))
+IID_ICLRRuntimeLocator = GUID(0xB760BF44, 0x9377, 0x4597, (0x8B, 0xE7, 0x58, 0x08, 0x3B, 0xDC, 0x51, 0x46))
+IID_IXCLRDataProcess = GUID(0x5C552AB6, 0xFC09, 0x4CB3, (0x8E, 0x36, 0x22, 0xFA, 0x03, 0xC7, 0x98, 0xB7))
 
 # Constants
 DEBUG_CLASS_USER_WINDOWS = 2
@@ -214,3 +220,121 @@ class ILLDBServices2Vtbl(ctypes.Structure):
 
 class ILLDBServices2(ctypes.Structure):
     _fields_ = [("lpVtbl", ctypes.POINTER(ILLDBServices2Vtbl))]
+
+# --- Native ITarget ABI (from src/diagnostics/src/SOS/inc/target.h) ---
+# Note: ITarget methods use a direct return enum for GetOperatingSystem; the others are HRESULT-based.
+
+# ITarget::GetOperatingSystem returns enum value (int)
+TARGET_GET_OS_FUNC_TYPE = ctypes.CFUNCTYPE(ctypes.c_int, PVOID)
+# ITarget::GetService(serviceId, outService)
+TARGET_GET_SERVICE_FUNC_TYPE = ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.POINTER(GUID), ctypes.POINTER(PVOID))
+# ITarget::GetRuntime(IRuntime**)
+TARGET_GET_RUNTIME_FUNC_TYPE = ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.POINTER(PVOID))
+# ITarget::Flush()
+TARGET_FLUSH_FUNC_TYPE = ctypes.CFUNCTYPE(None, PVOID)
+
+
+class ITargetVtbl(ctypes.Structure):
+    _fields_ = [
+        ("IUnknown", IUnknownVtbl),
+        ("GetOperatingSystem", TARGET_GET_OS_FUNC_TYPE),
+        ("GetService", TARGET_GET_SERVICE_FUNC_TYPE),
+        ("GetRuntime", TARGET_GET_RUNTIME_FUNC_TYPE),
+        ("Flush", TARGET_FLUSH_FUNC_TYPE),
+    ]
+
+
+class ITarget(ctypes.Structure):
+    _fields_ = [("lpVtbl", ctypes.POINTER(ITargetVtbl))]
+
+# --- Native IRuntime ABI (from src/diagnostics/src/SOS/inc/runtime.h) ---
+
+# Note: Many return values are not HRESULT but direct values (enum, ULONG64, LPCSTR)
+RUNTIME_GET_CONFIG_FUNC_TYPE = ctypes.CFUNCTYPE(ctypes.c_int, PVOID)
+RUNTIME_GET_MODULE_ADDR_FUNC_TYPE = ctypes.CFUNCTYPE(ULONG64, PVOID)
+RUNTIME_GET_MODULE_SIZE_FUNC_TYPE = ctypes.CFUNCTYPE(ULONG64, PVOID)
+RUNTIME_SET_DIR_FUNC_TYPE = ctypes.CFUNCTYPE(None, PVOID, PCSTR)
+RUNTIME_GET_DIR_FUNC_TYPE = ctypes.CFUNCTYPE(PCSTR, PVOID)
+RUNTIME_GET_CLRDATA_PROC_FUNC_TYPE = ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.c_int, ctypes.POINTER(PVOID))
+RUNTIME_GET_CORDEBUG_FUNC_TYPE = ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.POINTER(PVOID))
+RUNTIME_GET_EEVERSION_FUNC_TYPE = ctypes.CFUNCTYPE(HRESULT, PVOID, PVOID, ctypes.c_char_p, ctypes.c_int)
+
+
+class IRuntimeVtbl(ctypes.Structure):
+    _fields_ = [
+        ("IUnknown", IUnknownVtbl),
+        ("GetRuntimeConfiguration", RUNTIME_GET_CONFIG_FUNC_TYPE),
+        ("GetModuleAddress", RUNTIME_GET_MODULE_ADDR_FUNC_TYPE),
+        ("GetModuleSize", RUNTIME_GET_MODULE_SIZE_FUNC_TYPE),
+        ("SetRuntimeDirectory", RUNTIME_SET_DIR_FUNC_TYPE),
+        ("GetRuntimeDirectory", RUNTIME_GET_DIR_FUNC_TYPE),
+        ("GetClrDataProcess", RUNTIME_GET_CLRDATA_PROC_FUNC_TYPE),
+        ("GetCorDebugInterface", RUNTIME_GET_CORDEBUG_FUNC_TYPE),
+        ("GetEEVersion", RUNTIME_GET_EEVERSION_FUNC_TYPE),
+    ]
+
+
+class IRuntime(ctypes.Structure):
+    _fields_ = [("lpVtbl", ctypes.POINTER(IRuntimeVtbl))]
+
+# --- DAC creation ABI ---
+
+# CLRDataCreateInstance signature: HRESULT (*)(REFIID iid, ICLRDataTarget* pLegacyTarget, void** iface)
+CLRDATA_CREATEINSTANCE_FUNC_TYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.POINTER(GUID), PVOID, ctypes.POINTER(PVOID))
+
+# ICLRDataTarget vtable and interface (subset sufficient for DAC)
+DT_GET_MACHINE_TYPE = ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.POINTER(ULONG))
+DT_GET_POINTER_SIZE = ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.POINTER(ULONG))
+DT_GET_IMAGE_BASE = ctypes.CFUNCTYPE(HRESULT, PVOID, LPCWSTR, ctypes.POINTER(ULONG64))
+DT_READ_VIRTUAL = ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, PVOID, ULONG, ctypes.POINTER(ULONG))
+DT_WRITE_VIRTUAL = ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, PVOID, ULONG, ctypes.POINTER(ULONG))
+DT_GET_TLS_VALUE = ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG, ULONG, ctypes.POINTER(ULONG64))
+DT_SET_TLS_VALUE = ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG, ULONG, ULONG64)
+DT_GET_CUR_THREAD_ID = ctypes.CFUNCTYPE(HRESULT, PVOID, ctypes.POINTER(ULONG))
+DT_GET_THREAD_CONTEXT = ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG, ULONG, ULONG, PVOID)
+DT_SET_THREAD_CONTEXT = ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG, ULONG, PVOID)
+DT_REQUEST = ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG, ULONG, PVOID, ULONG, PVOID)
+
+class ICLRDataTargetVtbl(ctypes.Structure):
+    _fields_ = [
+        ("IUnknown", IUnknownVtbl),
+        ("GetMachineType", DT_GET_MACHINE_TYPE),
+        ("GetPointerSize", DT_GET_POINTER_SIZE),
+        ("GetImageBase", DT_GET_IMAGE_BASE),
+        ("ReadVirtual", DT_READ_VIRTUAL),
+        ("WriteVirtual", DT_WRITE_VIRTUAL),
+        ("GetTLSValue", DT_GET_TLS_VALUE),
+        ("SetTLSValue", DT_SET_TLS_VALUE),
+        ("GetCurrentThreadID", DT_GET_CUR_THREAD_ID),
+        ("GetThreadContext", DT_GET_THREAD_CONTEXT),
+        ("SetThreadContext", DT_SET_THREAD_CONTEXT),
+        ("Request", DT_REQUEST),
+    ]
+
+class ICLRDataTarget(ctypes.Structure):
+    _fields_ = [("lpVtbl", ctypes.POINTER(ICLRDataTargetVtbl))]
+
+# ICLRDataTarget2 extends ICLRDataTarget with AllocVirtual/FreeVirtual
+DT_ALLOC_VIRTUAL = ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, ULONG, ULONG, ctypes.POINTER(ULONG64))
+DT_FREE_VIRTUAL = ctypes.CFUNCTYPE(HRESULT, PVOID, ULONG64, ULONG, ULONG)
+
+class ICLRDataTarget2Vtbl(ctypes.Structure):
+    _fields_ = [
+        ("IUnknown", IUnknownVtbl),
+        ("GetMachineType", DT_GET_MACHINE_TYPE),
+        ("GetPointerSize", DT_GET_POINTER_SIZE),
+        ("GetImageBase", DT_GET_IMAGE_BASE),
+        ("ReadVirtual", DT_READ_VIRTUAL),
+        ("WriteVirtual", DT_WRITE_VIRTUAL),
+        ("GetTLSValue", DT_GET_TLS_VALUE),
+        ("SetTLSValue", DT_SET_TLS_VALUE),
+        ("GetCurrentThreadID", DT_GET_CUR_THREAD_ID),
+        ("GetThreadContext", DT_GET_THREAD_CONTEXT),
+        ("SetThreadContext", DT_SET_THREAD_CONTEXT),
+        ("Request", DT_REQUEST),
+        ("AllocVirtual", DT_ALLOC_VIRTUAL),
+        ("FreeVirtual", DT_FREE_VIRTUAL),
+    ]
+
+class ICLRDataTarget2(ctypes.Structure):
+    _fields_ = [("lpVtbl", ctypes.POINTER(ICLRDataTarget2Vtbl))]

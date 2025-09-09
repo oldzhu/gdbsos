@@ -143,7 +143,56 @@ class GdbServices:
         self.ihostservices_ptr = IHostServices(ctypes.pointer(self._ihostservices_vtbl))
         self.illldb_ptr = ILLDBServices(ctypes.pointer(self._illldb_vtbl))
         self.illldb2_ptr = ILLDBServices2(ctypes.pointer(self._illldb2_vtbl))
+        # Minimal native ITarget implementation (COM-like) exposed to SOS when host path is active
+        self._itarget_vtbl = ITargetVtbl(
+            iunknown_vtbl,
+            TARGET_GET_OS_FUNC_TYPE(self.target_get_operating_system),
+            TARGET_GET_SERVICE_FUNC_TYPE(self.target_get_service),
+            TARGET_GET_RUNTIME_FUNC_TYPE(self.target_get_runtime),
+            TARGET_FLUSH_FUNC_TYPE(self.target_flush),
+        )
+        self.itarget_ptr = ITarget(ctypes.pointer(self._itarget_vtbl))
+        # Minimal native IRuntime implementation
+        self._iruntime_vtbl = IRuntimeVtbl(
+            iunknown_vtbl,
+            RUNTIME_GET_CONFIG_FUNC_TYPE(self.runtime_get_config),
+            RUNTIME_GET_MODULE_ADDR_FUNC_TYPE(self.runtime_get_module_address),
+            RUNTIME_GET_MODULE_SIZE_FUNC_TYPE(self.runtime_get_module_size),
+            RUNTIME_SET_DIR_FUNC_TYPE(self.runtime_set_runtime_directory),
+            RUNTIME_GET_DIR_FUNC_TYPE(self.runtime_get_runtime_directory),
+            RUNTIME_GET_CLRDATA_PROC_FUNC_TYPE(self.runtime_get_clr_data_process),
+            RUNTIME_GET_CORDEBUG_FUNC_TYPE(self.runtime_get_cordebug_interface),
+            RUNTIME_GET_EEVERSION_FUNC_TYPE(self.runtime_get_ee_version),
+        )
+        self.iruntime_ptr = IRuntime(ctypes.pointer(self._iruntime_vtbl))
+        # Cache runtime config and size
+        self._runtime_config = 2  # IRuntime::UnixCore (same as Core on FEATURE_PAL Linux)
+        self._runtime_dir_override = None
+        self._coreclr_size = 0
         self._registered_debugger = None
+        # DAC state
+        self._dac_handle = None
+        self._clrdata_process = None  # Cached IXCLRDataProcess*
+        # Build ICLRDataTarget2 implementation vtable
+        self._dt_iunknown_vtbl = IUnknownVtbl(QI_FUNC_TYPE(self._dt_query_interface), ADDREF_FUNC_TYPE(self._dt_add_ref), RELEASE_FUNC_TYPE(self._dt_release))
+        self._dt_vtbl = ICLRDataTarget2Vtbl(
+            self._dt_iunknown_vtbl,
+            DT_GET_MACHINE_TYPE(self._dt_get_machine_type),
+            DT_GET_POINTER_SIZE(self._dt_get_pointer_size),
+            DT_GET_IMAGE_BASE(self._dt_get_image_base),
+            DT_READ_VIRTUAL(self._dt_read_virtual),
+            DT_WRITE_VIRTUAL(self._dt_write_virtual),
+            DT_GET_TLS_VALUE(self._dt_get_tls_value),
+            DT_SET_TLS_VALUE(self._dt_set_tls_value),
+            DT_GET_CUR_THREAD_ID(self._dt_get_current_thread_id),
+            DT_GET_THREAD_CONTEXT(self._dt_get_thread_context),
+            DT_SET_THREAD_CONTEXT(self._dt_set_thread_context),
+            DT_REQUEST(self._dt_request),
+            DT_ALLOC_VIRTUAL(self._dt_alloc_virtual),
+            DT_FREE_VIRTUAL(self._dt_free_virtual),
+        )
+        self._dt_ptr = ICLRDataTarget2(ctypes.pointer(self._dt_vtbl))
+        self._dt_ref = 0
         # Guard to avoid re-entrant or repeated continues
         self._continue_pending = False
 
@@ -679,8 +728,407 @@ class GdbServices:
 
     def host_get_current_target(self, this_ptr, out_ptr):
         trace("call into host_get_current_target")
-        if out_ptr:
-            out_ptr.contents.value = 0
+        try:
+            if out_ptr:
+                out_ptr.contents.value = ctypes.addressof(self.itarget_ptr)
+            # AddRef via our owning object (harmless for SOS expectations)
+            self.add_ref(this_ptr)
+            return 0
+        except Exception:
+            if out_ptr:
+                out_ptr.contents.value = 0
+            return 0x80004005
+
+    # --- ITarget (native) ---
+    def target_get_operating_system(self, this_ptr):
+        # ITarget.OperatingSystem enum: Unknown=0, Windows=1, Linux=2, OSX=3
+        return 2  # Linux
+
+    def target_get_service(self, this_ptr, guid_ptr, out_ptr):
+        # No per-target native services yet; return E_NOINTERFACE
+        try:
+            if out_ptr:
+                out_ptr.contents.value = 0
+        except Exception:
+            pass
+        return 0x80004002
+
+    def target_get_runtime(self, this_ptr, out_runtime_ptr):
+        # Provide a minimal runtime once CoreCLR maps; SOS uses it to locate DAC and query sizes.
+        path, base = self._scan_coreclr()
+        try:
+            if out_runtime_ptr:
+                if not path or base is None:
+                    out_runtime_ptr.contents.value = 0
+                    return 0x80004005
+                # Precompute module size if not cached
+                if not self._coreclr_size:
+                    self._coreclr_size = self._compute_module_size(path)
+                out_runtime_ptr.contents.value = ctypes.addressof(self.iruntime_ptr)
+                # AddRef via host object
+                self.add_ref(this_ptr)
+                return 0
+        except Exception:
+            pass
+        return 0x80004005
+
+    def target_flush(self, this_ptr):
+        # Clear caches related to module/thread state
+        try:
+            self._context_cache.clear()
+        except Exception:
+            pass
+        try:
+            self._coreclr_size = 0
+        except Exception:
+            pass
+
+    # --- IRuntime (native) ---
+    def _compute_module_size(self, path: str) -> int:
+        pid = self._get_pid()
+        if not pid:
+            return 0
+        min_start = None
+        max_end = None
+        try:
+            maps_path = f"/proc/{pid}/maps"
+            with open(maps_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if path not in line:
+                        continue
+                    parts = line.strip().split()
+                    if len(parts) < 6:
+                        continue
+                    p = ' '.join(parts[5:])
+                    if p.endswith(' (deleted)'):
+                        p = p[:-10]
+                    if p != path:
+                        continue
+                    try:
+                        start_str, end_str = parts[0].split('-')
+                        start = int(start_str, 16)
+                        end = int(end_str, 16)
+                    except Exception:
+                        continue
+                    if min_start is None or start < min_start:
+                        min_start = start
+                    if max_end is None or end > max_end:
+                        max_end = end
+        except Exception as ex:
+            trace(f"_compute_module_size error: {ex}")
+        if min_start is None or max_end is None or max_end <= min_start:
+            return 0
+        return max_end - min_start
+
+    def runtime_get_config(self, this_ptr):
+        return int(self._runtime_config)
+
+    def runtime_get_module_address(self, this_ptr):
+        return ctypes.c_uint64(self._coreclr_base or 0).value if hasattr(self, '_coreclr_base') else ctypes.c_uint64(self._coreclr_base or 0).value
+
+    def runtime_get_module_size(self, this_ptr):
+        if not self._coreclr_size:
+            path, base = self._scan_coreclr()
+            if path and base is not None:
+                self._coreclr_size = self._compute_module_size(path)
+        return ctypes.c_uint64(self._coreclr_size or 0).value
+
+    def runtime_set_runtime_directory(self, this_ptr, dir_ptr):
+        try:
+            self._runtime_dir_override = dir_ptr.decode() if isinstance(dir_ptr, bytes) else ctypes.cast(dir_ptr, ctypes.c_char_p).value.decode() if dir_ptr else None
+        except Exception:
+            self._runtime_dir_override = None
+
+    def runtime_get_runtime_directory(self, this_ptr):
+        # Prefer override, else from _scan_coreclr
+        try:
+            if self._runtime_dir_override:
+                return ctypes.c_char_p(self._runtime_dir_override.encode('utf-8'))
+            if self._coreclr_dir_buf is not None:
+                return ctypes.cast(self._coreclr_dir_buf, ctypes.c_char_p)
+            # attempt a refresh
+            path, base = self._scan_coreclr()
+            if self._coreclr_dir_buf is not None:
+                return ctypes.cast(self._coreclr_dir_buf, ctypes.c_char_p)
+        except Exception:
+            pass
+        return ctypes.c_char_p(None)
+
+    def runtime_get_clr_data_process(self, this_ptr, flags, out_pp):
+        # Create or return the IXCLRDataProcess instance via DAC
+        try:
+            if out_pp:
+                out_pp.contents.value = 0
+            # Return cached instance if available
+            if self._clrdata_process:
+                if out_pp:
+                    out_pp.contents.value = self._clrdata_process
+                return 0
+            # Ensure runtime directory is known
+            dir_c = self.runtime_get_runtime_directory(this_ptr)
+            runtime_dir = None
+            try:
+                runtime_dir = ctypes.cast(dir_c, ctypes.c_char_p).value.decode() if dir_c else None
+            except Exception:
+                runtime_dir = None
+            if not runtime_dir:
+                # Try scanning coreclr path
+                path, _ = self._scan_coreclr()
+                if path:
+                    runtime_dir = os.path.dirname(path)
+            if not runtime_dir:
+                return 0x80004005
+            # Do not set or modify any environment variables here to avoid
+            # triggering PAL getenv paths during DAC initialization.
+            # Build DAC path
+            dac_name = 'libmscordaccore.so'
+            dac_path = os.path.join(runtime_dir, dac_name)
+            # Load DAC
+            if self._dac_handle is None:
+                try:
+                    # Use RTLD_GLOBAL if available so DAC can resolve to process symbols
+                    mode = getattr(ctypes, 'RTLD_GLOBAL', None)
+                    self._dac_handle = ctypes.CDLL(dac_path, mode=mode) if mode is not None else ctypes.CDLL(dac_path)
+                except Exception as ex:
+                    trace(f"[dac] load error: {ex} (path={dac_path})")
+                    return 0x80004005
+            # Resolve CLRDataCreateInstance
+            try:
+                cdi = getattr(self._dac_handle, 'CLRDataCreateInstance')
+            except Exception:
+                trace("[dac] CLRDataCreateInstance not found")
+                return 0x80004005
+            cdi.argtypes = [ctypes.POINTER(GUID), PVOID, ctypes.POINTER(PVOID)]
+            cdi.restype = HRESULT
+            # Prepare IID_IXCLRDataProcess
+            iid = IID_IXCLRDataProcess
+            # Pass our ICLRDataTarget2 pointer as legacy target
+            out_iface = PVOID()
+            # Ensure target has up-to-date base
+            path, base = self._scan_coreclr()
+            if base is None:
+                return 0x80004005
+            # Call CLRDataCreateInstance
+            target_ptr = ctypes.cast(ctypes.byref(self._dt_ptr), ctypes.c_void_p)
+            # Optionally call inline (same thread) to simplify debugging and avoid Python threading
+            inline_call = os.environ.get('SOS_GDB_DAC_CALL_INLINE', '0') not in ('', '0', 'false', 'False')
+            if inline_call:
+                trace('[dac] CLRDataCreateInstance inline')
+                hr = cdi(ctypes.byref(iid), target_ptr, ctypes.byref(out_iface))
+                out_val = out_iface.value
+            else:
+                # Call with a basic timeout guard by running in a Python thread and joining briefly
+                hr_box = { 'hr': None, 'iface': None, 'err': None }
+                def _call_cdi():
+                    try:
+                        hr_local = cdi(ctypes.byref(iid), target_ptr, ctypes.byref(out_iface))
+                        hr_box['hr'] = hr_local
+                        hr_box['iface'] = out_iface.value
+                    except Exception as e:
+                        hr_box['err'] = e
+                import threading
+                t = threading.Thread(target=_call_cdi, daemon=True)
+                t.start()
+                try:
+                    to_ms = int(os.environ.get('SOS_GDB_DAC_TIMEOUT_MS', '2000'))
+                except Exception:
+                    to_ms = 2000
+                if to_ms <= 0:
+                    t.join()
+                else:
+                    t.join(max(0.001, to_ms / 1000.0))
+                if t.is_alive():
+                    trace("[dac] CLRDataCreateInstance appears stuck; aborting")
+                    return 0x80004005
+                if hr_box['err'] is not None:
+                    trace(f"[dac] CLRDataCreateInstance error: {hr_box['err']}")
+                    return 0x80004005
+                hr = hr_box['hr'] if hr_box['hr'] is not None else 0x80004005
+                out_val = hr_box['iface']
+            if hr != 0 or not out_val:
+                trace(f"[dac] CLRDataCreateInstance failed hr=0x{hr & 0xFFFFFFFF:08x}")
+                return hr if hr != 0 else 0x80004005
+            # Cache and return
+            self._clrdata_process = out_val
+            if out_pp:
+                out_pp.contents.value = self._clrdata_process
+            trace("[dac] IXCLRDataProcess created")
+            return 0
+        except Exception as ex:
+            trace(f"runtime_get_clr_data_process error: {ex}")
+            try:
+                if out_pp:
+                    out_pp.contents.value = 0
+            except Exception:
+                pass
+            return 0x80004005
+
+    # ---- ICLRDataTarget2 implementation ----
+    def _dt_query_interface(self, this_ptr, iid_ptr, out_ptr):
+        try:
+            iid = iid_ptr.contents if iid_ptr else None
+            if out_ptr:
+                out_ptr.contents.value = 0
+            if iid is None:
+                return 0x80004003
+            if self._guid_equal(iid, IID_IUnknown) or self._guid_equal(iid, IID_ICLRDataTarget) or self._guid_equal(iid, IID_ICLRDataTarget2):
+                if out_ptr:
+                    out_ptr.contents.value = ctypes.addressof(self._dt_ptr)
+                self._dt_add_ref(this_ptr)
+                return 0
+            return 0x80004002
+        except Exception:
+            return 0x80004005
+
+    def _dt_add_ref(self, this_ptr):
+        try:
+            self._dt_ref += 1
+            return self._dt_ref
+        except Exception:
+            return 1
+
+    def _dt_release(self, this_ptr):
+        try:
+            self._dt_ref = max(0, self._dt_ref - 1)
+            return self._dt_ref
+        except Exception:
+            return 0
+
+    def _dt_get_machine_type(self, this_ptr, machine_ptr):
+        try:
+            if machine_ptr:
+                machine_ptr.contents.value = IMAGE_FILE_MACHINE_AMD64
+            return 0
+        except Exception:
+            return 0x80004005
+
+    def _dt_get_pointer_size(self, this_ptr, size_ptr):
+        try:
+            if size_ptr:
+                size_ptr.contents.value = 8
+            return 0
+        except Exception:
+            return 0x80004005
+
+    def _dt_get_image_base(self, this_ptr, name_w, base_ptr):
+        # Return coreclr base when the module name matches; otherwise E_FAIL
+        try:
+            if not base_ptr:
+                return 0x80004003
+            path, base = self._scan_coreclr()
+            if base is None:
+                return 0x80004005
+            # name_w is LPCWSTR; normalize to Python str
+            name = None
+            try:
+                if isinstance(name_w, str):
+                    name = name_w
+                elif name_w is not None:
+                    name = ctypes.cast(name_w, ctypes.c_wchar_p).value
+            except Exception:
+                name = None
+            if not name:
+                return 0x80004005
+            bn = self._canon_modname(name)
+            if bn in ("coreclr", "libcoreclr"):
+                base_ptr.contents.value = ctypes.c_uint64(base).value
+                return 0
+            return 0x80004005
+        except Exception:
+            return 0x80004005
+
+    def _dt_read_virtual(self, this_ptr, address, buffer, request, done_ptr):
+        # Prefer direct process_vm_readv to avoid re-entering GDB during DAC init
+        total = 0
+        try:
+            if not buffer or request <= 0:
+                if done_ptr:
+                    done_ptr.contents.value = 0
+                return 0
+            pid = self._get_pid() or 0
+            if pid:
+                # libc.process_vm_readv
+                try:
+                    if not hasattr(self, "_libc_handle"):
+                        self._libc_handle = ctypes.CDLL("libc.so.6")
+                    libc = self._libc_handle
+                    class IOVec(ctypes.Structure):
+                        _fields_ = [("iov_base", ctypes.c_void_p), ("iov_len", ctypes.c_size_t)]
+                    local = IOVec()
+                    remote = IOVec()
+                    dst = buffer if isinstance(buffer, int) else ctypes.cast(buffer, ctypes.c_void_p).value
+                    local.iov_base = ctypes.c_void_p(dst)
+                    local.iov_len = ctypes.c_size_t(int(request))
+                    remote.iov_base = ctypes.c_void_p(int(address))
+                    remote.iov_len = ctypes.c_size_t(int(request))
+                    process_vm_readv = getattr(libc, 'process_vm_readv')
+                    process_vm_readv.argtypes = [ctypes.c_int, ctypes.POINTER(IOVec), ctypes.c_ulong, ctypes.POINTER(IOVec), ctypes.c_ulong, ctypes.c_ulong]
+                    process_vm_readv.restype = ctypes.c_ssize_t
+                    n = process_vm_readv(pid, ctypes.byref(local), 1, ctypes.byref(remote), 1, 0)
+                    if n and n > 0:
+                        total = int(n)
+                except Exception:
+                    total = 0
+            if total == 0:
+                # Fallback to GDB API in paged chunks
+                return self.read_virtual(this_ptr, address, buffer, request, done_ptr)
+            if done_ptr:
+                done_ptr.contents.value = total
+            return 0
+        except Exception:
+            if done_ptr:
+                done_ptr.contents.value = total
+            return 0x80070005
+
+    def _dt_write_virtual(self, this_ptr, address, buffer, request, done_ptr):
+        return 0x80004001
+
+    def _dt_get_tls_value(self, this_ptr, threadID, index, value_ptr):
+        return 0x80004001
+
+    def _dt_set_tls_value(self, this_ptr, threadID, index, value):
+        return 0x80004001
+
+    def _dt_get_current_thread_id(self, this_ptr, threadID_ptr):
+        try:
+            if threadID_ptr:
+                # Map to the current system thread id
+                cur = gdb.selected_thread()
+                sysid = self._thread_sysid(cur) if cur else 0
+                threadID_ptr.contents.value = sysid
+            return 0
+        except Exception:
+            return 0x80004005
+
+    def _dt_get_thread_context(self, this_ptr, threadID, contextFlags, contextSize, context):
+        try:
+            return self.lldb_get_thread_context_by_system_id(this_ptr, threadID, contextFlags, contextSize, context)
+        except Exception:
+            return 0x80004005
+
+    def _dt_set_thread_context(self, this_ptr, threadID, contextSize, context):
+        return 0x80004001
+
+    def _dt_request(self, this_ptr, reqCode, inSize, inBuffer, outSize, outBuffer):
+        return 0x80004001
+
+    def _dt_alloc_virtual(self, this_ptr, addr, size, typeFlags, protectFlags, virt_ptr):
+        return 0x80004001
+
+    def _dt_free_virtual(self, this_ptr, addr, size, typeFlags):
+        return 0x80004001
+
+    def runtime_get_cordebug_interface(self, this_ptr, out_pp):
+        # Not supported in GDB flow
+        try:
+            if out_pp:
+                out_pp.contents.value = 0
+        except Exception:
+            pass
+        return 0x80004002
+
+    def runtime_get_ee_version(self, this_ptr, pFileInfo, buf, bufSize):
+        # Optional; return E_NOTIMPL for now
         return 0x80004001
 
     # --- IHostServices ---
