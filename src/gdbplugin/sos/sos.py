@@ -145,13 +145,53 @@ class SOSCommand(gdb.Command):
     def __init__(self, name):
         super(SOSCommand, self).__init__(name, gdb.COMMAND_DATA)
         self.name = name
-        SOSCommand.lazy_load_sos()
+    # Defer libsos/SOS initialization until a command is actually invoked
+    # (align with LLDB plugin behavior). We'll load on-demand in invoke().
 
     # Track whether managed hosting was successfully initialized in this session
     hosting_initialized: bool = False
     # Queue bpmd requests issued before CLR loads; flushed on libcoreclr.so load
     _bpmd_pending = []  # type: list[str]
     _bpmd_hook_connected = False
+    # Track runtime load transition to auto-flush SOS caches once
+    _runtime_loaded_last: bool = False
+    _post_load_flushed: bool = False
+
+    @staticmethod
+    def _call_sosflush_if_available():
+        try:
+            if not getattr(SOSCommand, 'sos_handle', None):
+                return False
+            # Resolve SOSFlush export (native) and invoke it with ILLDBServices
+            func = None
+            for sym in _to_export_candidates_common('sosflush'):
+                try:
+                    func = getattr(SOSCommand.sos_handle, sym)
+                    break
+                except AttributeError:
+                    continue
+            if not func:
+                return False
+            func.argtypes = [PVOID, PCSTR]
+            func.restype = HRESULT
+            client_ptr = ctypes.byref(SOSCommand.gdb_services.illldb_ptr) if getattr(SOSCommand, 'gdb_services', None) else PVOID()
+            hr = func(client_ptr, b"")
+            return hr == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def _maybe_flush_after_runtime_load():
+        """If the target CLR has just loaded after earlier failures, flush SOS caches."""
+        try:
+            now_loaded = SOSCommand._is_runtime_loaded()
+            if now_loaded and not SOSCommand._runtime_loaded_last and not SOSCommand._post_load_flushed:
+                # Try flushing once to clear any stale "no runtime" error state inside SOS
+                SOSCommand._call_sosflush_if_available()
+                SOSCommand._post_load_flushed = True
+            SOSCommand._runtime_loaded_last = now_loaded
+        except Exception:
+            pass
 
     @staticmethod
     def _ensure_hosting_for_bpmd():
@@ -354,52 +394,64 @@ class SOSCommand(gdb.Command):
             except Exception:
                 SOSCommand.sos_dispatch_managed = None
 
-            # Initialize the SOS library
-            if TRACE_ENABLED:
-                gdb.write("[sos] Resolving SOSInitializeByHost...\n")
-            init_func = SOSCommand.sos_handle.SOSInitializeByHost
-            if TRACE_ENABLED:
-                try:
-                    ihost_addr = ctypes.addressof(SOSCommand.gdb_services.ihost_ptr)
-                except Exception:
-                    ihost_addr = 0
-                try:
-                    idebugger_addr = ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr)
-                except Exception:
-                    idebugger_addr = 0
-                gdb.write(f"[sos] Calling SOSInitializeByHost(IHost=0x{ihost_addr:x}, IDebuggerServices=0x{idebugger_addr:x}) ...\n")
-
-            # SOSInitializeByHost(IUnknown* punk, IDebuggerServices* debuggerServices)
-            # Pass our IHost implementation as the first argument (not NULL) so SOS can
-            # obtain HostServices and set up notifications like the LLDB plugin.
-            init_func.argtypes = [PVOID, PVOID]
-            init_func.restype = HRESULT
-
-            # Gate host path to avoid regressions while ITarget/IRuntime are stubbed.
-            use_host = os.environ.get('SOS_GDB_USE_HOST', '0') not in ('', '0', 'false', 'False')
-            host_arg = ctypes.byref(SOSCommand.gdb_services.ihost_ptr) if use_host else None
-            hr = init_func(host_arg, ctypes.byref(SOSCommand.gdb_services.idebugger_ptr))
-
-            if hr != 0:
-                gdb.write(f"SOSInitializeByHost failed with HRESULT {hr}.\n")
-                SOSCommand.sos_handle = None
-                return False
-
-            # Initialize the bridge's Extensions singleton now; defer managed hosting
+            # Initialize the bridge's Extensions singleton BEFORE calling SOSInitializeByHost,
+            # so we can retrieve the native IHost* and pass it to SOS (align with LLDB).
             try:
                 if getattr(SOSCommand, 'bridge_handle', None):
-                    # Initialize the bridge's Extensions singleton first
                     init_ext = getattr(SOSCommand.bridge_handle, 'InitGdbExtensions', None)
                     if init_ext is not None:
                         init_ext.argtypes = [ctypes.c_void_p]
                         init_ext.restype = ctypes.c_int
                         idebugger_ptr_addr = ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr)
                         init_ext(ctypes.c_void_p(idebugger_ptr_addr))
-                # Do not initialize managed hosting here to avoid loading DAC/host CLR
-                # before the target runtime is at a safe point.
             except Exception as e:
                 if TRACE_ENABLED:
                     gdb.write(f"[sos] Bridge InitGdbExtensions note: {e}\n")
+
+            # Resolve the native host pointer from the bridge if enabled
+            native_host_ptr = None
+            try:
+                if getattr(SOSCommand, 'bridge_handle', None):
+                    get_host = getattr(SOSCommand.bridge_handle, 'GetHostForSos', None)
+                    if get_host is not None:
+                        get_host.argtypes = []
+                        get_host.restype = ctypes.c_void_p
+                        native_host_ptr = get_host()
+                        if TRACE_ENABLED and native_host_ptr:
+                            gdb.write(f"[sos] Native IHost from bridge: 0x{native_host_ptr:x}\n")
+            except Exception as e:
+                if TRACE_ENABLED:
+                    gdb.write(f"[sos] GetHostForSos note: {e}\n")
+
+            # Initialize the SOS library
+            if TRACE_ENABLED:
+                gdb.write("[sos] Resolving SOSInitializeByHost...\n")
+            init_func = SOSCommand.sos_handle.SOSInitializeByHost
+            init_func.argtypes = [PVOID, PVOID]
+            init_func.restype = HRESULT
+
+            # Prefer native host from bridge by default; allow override via env
+            use_host = os.environ.get('SOS_GDB_USE_HOST', '1') not in ('', '0', 'false', 'False')
+            if use_host and native_host_ptr:
+                host_arg = ctypes.c_void_p(native_host_ptr)
+                if TRACE_ENABLED:
+                    gdb.write(f"[sos] Calling SOSInitializeByHost(native host, IDebuggerServices=0x{ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr):x}) ...\n")
+            elif use_host:
+                # Fallback to Python IHost if native host is unavailable
+                host_arg = ctypes.byref(SOSCommand.gdb_services.ihost_ptr)
+                if TRACE_ENABLED:
+                    gdb.write(f"[sos] Calling SOSInitializeByHost(python host, IDebuggerServices=0x{ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr):x}) ...\n")
+            else:
+                host_arg = None
+                if TRACE_ENABLED:
+                    gdb.write(f"[sos] Calling SOSInitializeByHost(NULL host, IDebuggerServices=0x{ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr):x}) ...\n")
+
+            hr = init_func(host_arg, ctypes.byref(SOSCommand.gdb_services.idebugger_ptr))
+
+            if hr != 0:
+                gdb.write(f"SOSInitializeByHost failed with HRESULT {hr}.\n")
+                SOSCommand.sos_handle = None
+                return False
 
             if use_host:
                 gdb.write("SOS GDB Python extension loaded (host path enabled).\n")
@@ -422,6 +474,8 @@ class SOSCommand(gdb.Command):
                     SOSCommand.gdb_services.clear_interrupt()
             except Exception:
                 pass
+            # If CLR just became available after earlier failures, clear stale error state once
+            SOSCommand._maybe_flush_after_runtime_load()
             # For help/soshelp, prefer managed help when CLR is loaded for richer output
             lower_name = self.name.lower()
             # LLDB-aligned: deliver bpmd immediately even if CLR not loaded
@@ -570,9 +624,11 @@ class SosUmbrellaCommand(gdb.Command):
                 SOSCommand.gdb_services.clear_interrupt()
         except Exception:
             pass
+        # If CLR just became available after earlier failures, clear stale error state once
+        SOSCommand._maybe_flush_after_runtime_load()
 
-    # LLDB-aligned: deliver bpmd immediately even if CLR not loaded.
-    # No pre-CLR queuing or local pending bp planting here; fall through to dispatch.
+        # LLDB-aligned: deliver bpmd immediately even if CLR not loaded.
+        # No pre-CLR queuing or local pending bp planting here; fall through to dispatch.
 
         
         # For help/soshelp, prefer managed help when CLR is loaded
