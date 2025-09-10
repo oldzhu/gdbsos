@@ -188,6 +188,23 @@ class SOSCommand(gdb.Command):
             if now_loaded and not SOSCommand._runtime_loaded_last and not SOSCommand._post_load_flushed:
                 # Try flushing once to clear any stale "no runtime" error state inside SOS
                 SOSCommand._call_sosflush_if_available()
+                # Also notify the managed host of the current PID so it can create/update the target.
+                try:
+                    pid = 0
+                    if hasattr(SOSCommand, 'gdb_services') and SOSCommand.gdb_services is not None:
+                        pid = SOSCommand.gdb_services._get_pid() or 0
+                    bridge = getattr(SOSCommand, 'bridge_handle', None)
+                    if bridge is not None and pid:
+                        upd = getattr(bridge, 'UpdateManagedTarget', None)
+                        if upd is not None:
+                            upd.argtypes = [ctypes.c_uint]
+                            upd.restype = ctypes.c_int
+                            hr = upd(int(pid))
+                            if TRACE_ENABLED:
+                                gdb.write(f"[sos] UpdateManagedTarget(pid={pid}) => 0x{hr & 0xFFFFFFFF:08x}\n")
+                except Exception as ex:
+                    if TRACE_ENABLED:
+                        gdb.write(f"[sos] UpdateManagedTarget note: {ex}\n")
                 SOSCommand._post_load_flushed = True
             SOSCommand._runtime_loaded_last = now_loaded
         except Exception:
@@ -216,6 +233,23 @@ class SOSCommand(gdb.Command):
                 SOSCommand.hosting_initialized = True
                 if TRACE_ENABLED:
                     gdb.write("[sos] Managed hosting initialized for bpmd.\n")
+                # Ensure the managed host target reflects the current PID for runtime discovery
+                try:
+                    pid = 0
+                    if hasattr(SOSCommand, 'gdb_services') and SOSCommand.gdb_services is not None:
+                        pid = SOSCommand.gdb_services._get_pid() or 0
+                    bridge = getattr(SOSCommand, 'bridge_handle', None)
+                    if bridge is not None and pid:
+                        upd = getattr(bridge, 'UpdateManagedTarget', None)
+                        if upd is not None:
+                            upd.argtypes = [ctypes.c_uint]
+                            upd.restype = ctypes.c_int
+                            hr2 = upd(int(pid))
+                            if TRACE_ENABLED:
+                                gdb.write(f"[sos] UpdateManagedTarget(pid={pid}) => 0x{hr2 & 0xFFFFFFFF:08x}\n")
+                except Exception as ex:
+                    if TRACE_ENABLED:
+                        gdb.write(f"[sos] UpdateManagedTarget note: {ex}\n")
                 return True
             if hres is not None and TRACE_ENABLED:
                 gdb.write(f"[sos] Managed hosting init for bpmd failed HRESULT=0x{hres:08x}.\n")
@@ -329,6 +363,23 @@ class SOSCommand(gdb.Command):
             if hres == 0:
                 SOSCommand.hosting_initialized = True
                 gdb.write("Managed hosting initialized.\n")
+                # After hosting init, ensure managed target is updated with current PID
+                try:
+                    pid = 0
+                    if hasattr(SOSCommand, 'gdb_services') and SOSCommand.gdb_services is not None:
+                        pid = SOSCommand.gdb_services._get_pid() or 0
+                    bridge = getattr(SOSCommand, 'bridge_handle', None)
+                    if bridge is not None and pid:
+                        upd = getattr(bridge, 'UpdateManagedTarget', None)
+                        if upd is not None:
+                            upd.argtypes = [ctypes.c_uint]
+                            upd.restype = ctypes.c_int
+                            hr2 = upd(int(pid))
+                            if TRACE_ENABLED:
+                                gdb.write(f"[sos] UpdateManagedTarget(pid={pid}) => 0x{hr2 & 0xFFFFFFFF:08x}\n")
+                except Exception as ex:
+                    if TRACE_ENABLED:
+                        gdb.write(f"[sos] UpdateManagedTarget note: {ex}\n")
                 return True
             if hres is not None:
                 h32 = hres & 0xFFFFFFFF
@@ -404,6 +455,26 @@ class SOSCommand(gdb.Command):
                         init_ext.restype = ctypes.c_int
                         idebugger_ptr_addr = ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr)
                         init_ext(ctypes.c_void_p(idebugger_ptr_addr))
+                    # Wire UpdateManagedTarget into services for proactive PID update calls
+                    try:
+                        upd = getattr(SOSCommand.bridge_handle, 'UpdateManagedTarget', None)
+                        if upd is not None:
+                            upd.argtypes = [ctypes.c_uint]
+                            upd.restype = ctypes.c_int
+                            # Assign a small wrapper to services so it can invoke the bridge
+                            def _bridge_update(pid: int):
+                                try:
+                                    return upd(int(pid))
+                                except Exception:
+                                    return 0x80004005
+                            try:
+                                # services module class has attribute for this
+                                SOSCommand.gdb_services._bridge_update_fn = _bridge_update
+                            except Exception:
+                                pass
+                    except Exception as exu:
+                        if TRACE_ENABLED:
+                            gdb.write(f"[sos] bridge UpdateManagedTarget wiring note: {exu}\n")
             except Exception as e:
                 if TRACE_ENABLED:
                     gdb.write(f"[sos] Bridge InitGdbExtensions note: {e}\n")

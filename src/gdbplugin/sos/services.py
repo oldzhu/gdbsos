@@ -37,6 +37,9 @@ class GdbServices:
         self._runtime_loaded_fired = False
         # Consider the runtime ready only after the entry breakpoint fires
         self._runtime_initialized = False
+        # Optional hook provided by sos.py to update the managed host target PID via bridge
+        # Set to a callable(pid:int)->HRESULT when the bridge is available; else None
+        self._bridge_update_fn = None
 
         iunknown_vtbl = IUnknownVtbl(QI_FUNC_TYPE(self.query_interface), ADDREF_FUNC_TYPE(self.add_ref), RELEASE_FUNC_TYPE(self.release))
 
@@ -593,6 +596,11 @@ class GdbServices:
                 if os.path.basename(fname) != 'libcoreclr.so':
                     return
                 trace_cat('bpmd', f"[new-objfile] detected {fname}")
+                # Proactively update managed target PID so managed host can enumerate runtimes
+                try:
+                    self._update_host_target_pid_if_possible()
+                except Exception as exu:
+                    trace(f"[new-objfile] UpdateManagedTarget note: {exu}")
                 # Do not invoke runtime-loaded/exception callbacks here; defer until
                 # coreclr_execute_assembly is hit to avoid early DAC loads.
                 # One-shot: we can disconnect this hook after firing
@@ -629,6 +637,11 @@ class GdbServices:
             path, base = self._scan_coreclr()
             if not path or base is None:
                 return
+            # Ensure managed host target knows the PID before firing callback
+            try:
+                self._update_host_target_pid_if_possible()
+            except Exception as exu:
+                trace(f"[invoke] UpdateManagedTarget note: {exu}")
             CBTYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
             cb = ctypes.cast(self._runtime_loaded_cb, CBTYPE)
             hr = cb(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
@@ -752,6 +765,24 @@ class GdbServices:
         except Exception:
             pass
         return 0x80004002
+
+    # --- Helpers to notify managed host (bridge) ---
+    def _update_host_target_pid_if_possible(self):
+        """Invoke bridge UpdateManagedTarget(pid) if wired by sos.py and PID is known."""
+        try:
+            fn = getattr(self, "_bridge_update_fn", None)
+            if not fn or not callable(fn):
+                return
+            pid = self._get_pid() or 0
+            if not pid:
+                return
+            try:
+                hr = int(fn(int(pid)))
+                trace_cat('bpmd', f"[update] UpdateManagedTarget(pid={pid}) => 0x{hr & 0xFFFFFFFF:08x}")
+            except Exception as ex:
+                trace(f"[update] UpdateManagedTarget error: {ex}")
+        except Exception as ex:
+            trace(f"_update_host_target_pid_if_possible error: {ex}")
 
     def target_get_runtime(self, this_ptr, out_runtime_ptr):
         # Provide a minimal runtime once CoreCLR maps; SOS uses it to locate DAC and query sizes.
@@ -1262,6 +1293,15 @@ class GdbServices:
                     try:
                         # Mark runtime initialized when the entry is reached
                         services_self._runtime_initialized = True
+                        # Refresh coreclr mapping cache and update host target PID
+                        try:
+                            services_self._scan_coreclr()
+                        except Exception:
+                            pass
+                        try:
+                            services_self._update_host_target_pid_if_possible()
+                        except Exception:
+                            pass
                         # Cast callback and call with ILLDBServices* once if not already fired
                         if services_self._runtime_loaded_cb and not services_self._runtime_loaded_fired:
                             CBTYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)

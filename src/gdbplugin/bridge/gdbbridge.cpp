@@ -88,4 +88,23 @@ __attribute__((visibility("default"))) void* GetHostForSos()
     return (void*)Extensions::GetInstance()->GetHost();
 }
 
+// Force the managed host to update/create the target for the given process id.
+// This helps ensure DebugServices sees the correct PID after runtime load.
+__attribute__((visibility("default"))) int UpdateManagedTarget(unsigned int processId)
+{
+    // Ensure the Extensions singleton exists and managed hosting is initialized
+    if (Extensions::GetInstance() == nullptr) {
+        return 0x80004002; // E_NOINTERFACE until InitGdbExtensions is called
+    }
+    IHostServices* hostServices = GetHostServices();
+    if (hostServices == nullptr) {
+        int hr = InitManagedHosting(nullptr, 0);
+        if (hr != 0) {
+            return hr;
+        }
+    }
+    HRESULT hrUpdate = Extensions::GetInstance()->UpdateTarget(processId);
+    return (int)hrUpdate;
+}
+
 }
