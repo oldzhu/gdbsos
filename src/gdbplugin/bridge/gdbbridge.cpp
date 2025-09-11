@@ -16,11 +16,11 @@ public:
     }
 
     IHost* GetHost() override {
-        if (m_pHost == nullptr) {
-            // Initialize the hosting runtime which will call InitializeHostServices
-            // and provide a host instance via the callback.
-            InitializeHosting();
-        }
+    // GDB variant: defer managed hosting. LLDB plugin on PAL typically already
+    // has m_pHost set via external callback path. Returning nullptr here
+    // allows higher layers to explicitly trigger hosting only after the
+    // runtime is actually present (post module load), avoiding premature
+    // HostServices.Initialize and duplicate initialization/asserts.
         return m_pHost;
     }
 };
@@ -106,5 +106,6 @@ __attribute__((visibility("default"))) int UpdateManagedTarget(unsigned int proc
     HRESULT hrUpdate = Extensions::GetInstance()->UpdateTarget(processId);
     return (int)hrUpdate;
 }
+
 
 }

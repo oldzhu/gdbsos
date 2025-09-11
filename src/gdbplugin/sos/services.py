@@ -941,41 +941,10 @@ class GdbServices:
                 return 0x80004005
             # Call CLRDataCreateInstance
             target_ptr = ctypes.cast(ctypes.byref(self._dt_ptr), ctypes.c_void_p)
-            # Optionally call inline (same thread) to simplify debugging and avoid Python threading
-            inline_call = os.environ.get('SOS_GDB_DAC_CALL_INLINE', '0') not in ('', '0', 'false', 'False')
-            if inline_call:
-                trace('[dac] CLRDataCreateInstance inline')
-                hr = cdi(ctypes.byref(iid), target_ptr, ctypes.byref(out_iface))
-                out_val = out_iface.value
-            else:
-                # Call with a basic timeout guard by running in a Python thread and joining briefly
-                hr_box = { 'hr': None, 'iface': None, 'err': None }
-                def _call_cdi():
-                    try:
-                        hr_local = cdi(ctypes.byref(iid), target_ptr, ctypes.byref(out_iface))
-                        hr_box['hr'] = hr_local
-                        hr_box['iface'] = out_iface.value
-                    except Exception as e:
-                        hr_box['err'] = e
-                import threading
-                t = threading.Thread(target=_call_cdi, daemon=True)
-                t.start()
-                try:
-                    to_ms = int(os.environ.get('SOS_GDB_DAC_TIMEOUT_MS', '2000'))
-                except Exception:
-                    to_ms = 2000
-                if to_ms <= 0:
-                    t.join()
-                else:
-                    t.join(max(0.001, to_ms / 1000.0))
-                if t.is_alive():
-                    trace("[dac] CLRDataCreateInstance appears stuck; aborting")
-                    return 0x80004005
-                if hr_box['err'] is not None:
-                    trace(f"[dac] CLRDataCreateInstance error: {hr_box['err']}")
-                    return 0x80004005
-                hr = hr_box['hr'] if hr_box['hr'] is not None else 0x80004005
-                out_val = hr_box['iface']
+            # Call CLRDataCreateInstance inline (no timeout or threading so hangs are observable for investigation)
+            trace('[dac] CLRDataCreateInstance inline (no timeout)')
+            hr = cdi(ctypes.byref(iid), target_ptr, ctypes.byref(out_iface))
+            out_val = out_iface.value
             if hr != 0 or not out_val:
                 trace(f"[dac] CLRDataCreateInstance failed hr=0x{hr & 0xFFFFFFFF:08x}")
                 return hr if hr != 0 else 0x80004005
