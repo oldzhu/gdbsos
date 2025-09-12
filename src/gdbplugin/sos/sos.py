@@ -150,9 +150,6 @@ class SOSCommand(gdb.Command):
 
     # Track whether managed hosting was successfully initialized in this session
     hosting_initialized: bool = False
-    # Queue bpmd requests issued before CLR loads; flushed on libcoreclr.so load
-    _bpmd_pending = []  # type: list[str]
-    _bpmd_hook_connected = False
     # Track runtime load transition to auto-flush SOS caches once
     _runtime_loaded_last: bool = False
     _post_load_flushed: bool = False
@@ -210,122 +207,9 @@ class SOSCommand(gdb.Command):
         except Exception:
             pass
 
-    @staticmethod
-    def _ensure_hosting_for_bpmd():
-        """Ensure managed hosting (host CLR in debugger process) is initialized
-        before executing bpmd so SOS can set up its managed components similarly
-        to the LLDB plugin. This is independent of the target CLR state and
-        does not load DAC; DAC remains gated by runtime entry in services.py.
-        """
-        try:
-            if getattr(SOSCommand, 'hosting_initialized', False):
-                return True
-            hres = None
-            if getattr(SOSCommand, 'sos_init_hosting', None):
-                hres = SOSCommand.sos_init_hosting(None, 0)
-            elif getattr(SOSCommand, 'bridge_handle', None):
-                init_hosting = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
-                if init_hosting is not None:
-                    init_hosting.argtypes = [ctypes.c_char_p, ctypes.c_int]
-                    init_hosting.restype = ctypes.c_int
-                    hres = init_hosting(None, 0)
-            if hres == 0:
-                SOSCommand.hosting_initialized = True
-                if TRACE_ENABLED:
-                    gdb.write("[sos] Managed hosting initialized for bpmd.\n")
-                # Ensure the managed host target reflects the current PID for runtime discovery
-                try:
-                    pid = 0
-                    if hasattr(SOSCommand, 'gdb_services') and SOSCommand.gdb_services is not None:
-                        pid = SOSCommand.gdb_services._get_pid() or 0
-                    bridge = getattr(SOSCommand, 'bridge_handle', None)
-                    if bridge is not None and pid:
-                        upd = getattr(bridge, 'UpdateManagedTarget', None)
-                        if upd is not None:
-                            upd.argtypes = [ctypes.c_uint]
-                            upd.restype = ctypes.c_int
-                            hr2 = upd(int(pid))
-                            if TRACE_ENABLED:
-                                gdb.write(f"[sos] UpdateManagedTarget(pid={pid}) => 0x{hr2 & 0xFFFFFFFF:08x}\n")
-                except Exception as ex:
-                    if TRACE_ENABLED:
-                        gdb.write(f"[sos] UpdateManagedTarget note: {ex}\n")
-                return True
-            if hres is not None and TRACE_ENABLED:
-                gdb.write(f"[sos] Managed hosting init for bpmd failed HRESULT=0x{hres:08x}.\n")
-        except Exception as e:
-            if TRACE_ENABLED:
-                gdb.write(f"[sos] Managed hosting init for bpmd error: {e}\n")
-        return False
-
-    @staticmethod
-    def _ensure_runtime_entry_breakpoint():
-        """Ensure a pending breakpoint on coreclr_execute_assembly exists.
-        Mirrors LLDB behavior where bpmd pre-CLR plants a pending runtime entry bp.
-        """
-        try:
-            # Allow pending breakpoints so symbols can resolve when libcoreclr loads
-            try:
-                gdb.execute('set breakpoint pending on', to_string=True)
-            except Exception:
-                pass
-            # Avoid duplicates
-            try:
-                for bp in (gdb.breakpoints() or []):
-                    loc = getattr(bp, 'location', '') or ''
-                    if 'coreclr_execute_assembly' in loc:
-                        return
-            except Exception:
-                pass
-            # Prefer the command path to honor pending behavior consistently
-            try:
-                gdb.execute('break coreclr_execute_assembly', to_string=True)
-                if TRACE_ENABLED:
-                    gdb.write('[bpmd] planted pending bp on coreclr_execute_assembly\n')
-            except Exception:
-                # Fallback: attempt via Python API
-                try:
-                    gdb.Breakpoint('coreclr_execute_assembly')
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    @staticmethod
-    def _flush_pending_bpmd():
-        if not SOSCommand._bpmd_pending:
-            return
-        pend = list(SOSCommand._bpmd_pending)
-        SOSCommand._bpmd_pending.clear()
-        for args in pend:
-            try:
-                gdb.execute(f"sos bpmd {args}", to_string=True)
-            except Exception:
-                pass
-
-    @staticmethod
-    def _connect_bpmd_defer_hook():
-        if SOSCommand._bpmd_hook_connected:
-            return
-        def _on_newobj(event):
-            try:
-                obj = getattr(event, 'new_objfile', None)
-                fname = getattr(obj, 'filename', None) if obj is not None else None
-                if not fname or os.path.basename(fname) != 'libcoreclr.so':
-                    return
-                # CLR just loaded: flush queued bpmd commands
-                SOSCommand._flush_pending_bpmd()
-            finally:
-                try:
-                    gdb.events.new_objfile.disconnect(_on_newobj)
-                except Exception:
-                    pass
-                SOSCommand._bpmd_hook_connected = False
-        try:
-            gdb.events.new_objfile.connect(_on_newobj)
-            SOSCommand._bpmd_hook_connected = True
-        except Exception:
-            SOSCommand._bpmd_hook_connected = False
+    # (Removed) Python-layer bpmd pending queue, runtime entry breakpoint planting,
+    # and defer hooks. Native SOS host is responsible for pending managed breakpoints
+    # via runtime-loaded and code-gen notifications (LLDB parity).
 
     @staticmethod
     def _is_runtime_loaded() -> bool:
@@ -501,17 +385,47 @@ class SOSCommand(gdb.Command):
             init_func.argtypes = [PVOID, PVOID]
             init_func.restype = HRESULT
 
-            # Prefer native host from bridge by default; allow override via env
+            # Prefer native host from bridge by default; allow override via env.
+            # We no longer fabricate a Python host fallback to avoid creating a 2nd host/runtime.
             use_host = os.environ.get('SOS_GDB_USE_HOST', '1') not in ('', '0', 'false', 'False')
-            if use_host and native_host_ptr:
-                host_arg = ctypes.c_void_p(native_host_ptr)
-                if TRACE_ENABLED:
-                    gdb.write(f"[sos] Calling SOSInitializeByHost(native host, IDebuggerServices=0x{ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr):x}) ...\n")
-            elif use_host:
-                # Fallback to Python IHost if native host is unavailable
-                host_arg = ctypes.byref(SOSCommand.gdb_services.ihost_ptr)
-                if TRACE_ENABLED:
-                    gdb.write(f"[sos] Calling SOSInitializeByHost(python host, IDebuggerServices=0x{ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr):x}) ...\n")
+            if use_host and not native_host_ptr and getattr(SOSCommand, 'bridge_handle', None):
+                # Attempt a proactive managed hosting initialization on the native side.
+                try:
+                    init_managed = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
+                    if init_managed is not None:
+                        # Best-effort: we don't always know runtime directory yet; pass nulls.
+                        init_managed.argtypes = [ctypes.c_char_p, ctypes.c_int]
+                        init_managed.restype = ctypes.c_int
+                        hr_host = init_managed(None, 0)
+                        if TRACE_ENABLED:
+                            gdb.write(f"[sos] InitManagedHosting retry hr=0x{hr_host & 0xFFFFFFFF:08x}\n")
+                        # Requery host pointer after attempt
+                        try:
+                            get_host = getattr(SOSCommand.bridge_handle, 'GetHostForSos', None)
+                            if get_host is not None:
+                                get_host.argtypes = []
+                                get_host.restype = ctypes.c_void_p
+                                native_host_ptr = get_host()
+                                if TRACE_ENABLED and native_host_ptr:
+                                    gdb.write(f"[sos] Native IHost acquired after retry: 0x{native_host_ptr:x}\n")
+                        except Exception as ex2:
+                            if TRACE_ENABLED:
+                                gdb.write(f"[sos] Host requery note: {ex2}\n")
+                except Exception as ex1:
+                    if TRACE_ENABLED:
+                        gdb.write(f"[sos] InitManagedHosting retry exception: {ex1}\n")
+
+            if use_host:
+                if native_host_ptr:
+                    host_arg = ctypes.c_void_p(native_host_ptr)
+                    if TRACE_ENABLED:
+                        gdb.write(f"[sos] Calling SOSInitializeByHost(native host, IDebuggerServices=0x{ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr):x}) ...\n")
+                else:
+                    # Do not fallback to Python host; proceed with NULL to surface issue & avoid duplicate host.
+                    host_arg = None
+                    gdb.write("[sos][warn] Native host not available; proceeding with NULL host (no Python fallback).\n")
+                    if TRACE_ENABLED:
+                        gdb.write(f"[sos] Calling SOSInitializeByHost(NULL host, IDebuggerServices=0x{ctypes.addressof(SOSCommand.gdb_services.idebugger_ptr):x}) ...\n")
             else:
                 host_arg = None
                 if TRACE_ENABLED:
@@ -525,9 +439,12 @@ class SOSCommand(gdb.Command):
                 return False
 
             if use_host:
-                gdb.write("SOS GDB Python extension loaded (host path enabled).\n")
+                if native_host_ptr:
+                    gdb.write("SOS GDB Python extension loaded (native host).\n")
+                else:
+                    gdb.write("SOS GDB Python extension loaded (NO native host; NULL host path).\n")
             else:
-                gdb.write("SOS GDB Python extension loaded (host path disabled; set SOS_GDB_USE_HOST=1 to enable).\n")
+                gdb.write("SOS GDB Python extension loaded (host disabled via env).\n")
             return True
         except Exception as e:
             gdb.write(f"Error loading or initializing libsos.so: {e}\n")
@@ -593,9 +510,7 @@ class SOSCommand(gdb.Command):
                 except AttributeError:
                     continue
             if sos_func is not None:
-                # Initialize host managed hosting when running bpmd (LLDB parity)
-                if lower_name == 'bpmd':
-                    SOSCommand._ensure_hosting_for_bpmd()
+                # bpmd: no Python pending logic; native command sets up callbacks.
                 sos_func.argtypes = [PVOID, PCSTR]
                 sos_func.restype = HRESULT
 

@@ -196,8 +196,7 @@ class GdbServices:
         )
         self._dt_ptr = ICLRDataTarget2(ctypes.pointer(self._dt_vtbl))
         self._dt_ref = 0
-        # Guard to avoid re-entrant or repeated continues
-        self._continue_pending = False
+    # (Removed) Python-layer auto-continue guard; GDB flow now mirrors LLDB: native runtime-loaded callback is responsible for a single continue.
 
         # Proactively connect new-objfile hook so we never miss libcoreclr.so load
         # even if SOS registers callbacks later. This handler is one-shot and
@@ -216,56 +215,7 @@ class GdbServices:
         except Exception:
             pass
 
-    def _schedule_safe_continue(self):
-        """Schedule a safe 'continue' outside of callback context to avoid
-        'program is already running' errors. Uses gdb.post_event and a guard."""
-        try:
-            if self._continue_pending:
-                return
-            self._continue_pending = True
-
-            def _do_continue():
-                try:
-                    # Best-effort: issue continue; errors are traced but ignored.
-                    try:
-                        gdb.execute('continue', to_string=True)
-                    except gdb.error as ge:
-                        trace(f"[continue] gdb.error: {ge}")
-                    except Exception as ex:
-                        trace(f"[continue] unexpected error: {ex}")
-                    trace_cat('bpmd', '[continue] issued via post_event')
-                except Exception as ex:
-                    trace(f"[continue] error: {ex}")
-                finally:
-                    try:
-                        self._continue_pending = False
-                    except Exception:
-                        pass
-
-            gdb.post_event(_do_continue)
-        except Exception as ex:
-            trace(f"_schedule_safe_continue error: {ex}")
-
-    def _set_one_shot_pc_breakpoint(self):
-        """Install a temporary breakpoint at the current PC to guarantee
-        one more stop immediately after we auto-continue. This helps SOS's
-        exception callback observe CLR notifications (Option A path).
-        """
-        try:
-            pc_val = int(gdb.parse_and_eval("$pc"))
-            try:
-                # Prefer a command to ensure true temporary behavior across gdb versions
-                gdb.execute(f"tbreak *0x{pc_val:x}", to_string=True)
-                trace_cat('bpmd', f"[one-shot] tbreak set at *0x{pc_val:x}")
-            except Exception:
-                # Fallback to Python API if available
-                try:
-                    gdb.Breakpoint(f"*0x{pc_val:x}", temporary=True)
-                    trace_cat('bpmd', f"[one-shot] python temporary Breakpoint at *0x{pc_val:x}")
-                except Exception as ex2:
-                    trace(f"[one-shot] failed to set temporary bp: {ex2}")
-        except Exception as ex:
-            trace(f"[one-shot] could not determine $pc: {ex}")
+    # (Removed) _schedule_safe_continue and _set_one_shot_pc_breakpoint: no longer auto-continuing from Python layer.
 
     def _is_core_dump_session(self) -> bool:
         """Detect if the current GDB session is a real core dump debugging session.
@@ -1280,16 +1230,10 @@ class GdbServices:
                             trace(f"RuntimeLoaded callback HR=0x{h:08x}")
                             if h == 0:
                                 services_self._runtime_loaded_fired = True
-                        # Immediately trigger the exception callback once to process CLR notifications
-                        if getattr(services_self, "_exception_cb", None) and services_self._runtime_loaded_fired:
-                            ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
-                            ecb = ctypes.cast(services_self._exception_cb, ETYPE)
-                            ehr = ecb(ctypes.c_void_p(ctypes.addressof(services_self.illldb_ptr)))
-                            trace(f"Exception callback HR=0x{int(ehr) & 0xFFFFFFFF:08x}")
                     except Exception as ex:
                         trace(f"RuntimeLoaded callback error: {ex}")
-                    # Return False to auto-continue; we already primed callbacks.
-                    return False
+                    # Stop here (return True) so user can inspect; host/native logic may choose to continue explicitly.
+                    return True
 
             # Listen for lib loads in case symbol binding is delayed
             if not self._newobj_hook_registered:

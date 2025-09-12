@@ -3,8 +3,11 @@ set -euo pipefail
 
 # Sync submodules to ensure diagnostics is present
 if command -v git >/dev/null 2>&1; then
-  git submodule sync --recursive || true
-  git submodule update --init --recursive || true
+   if [[ $(git submodule status src/diagnostics) == -* ]]; then
+      git submodule update --remote --checkout src/diagnostics
+      git add src/diagnostics
+      git commit -m "Update submodule to latest main ($(git -C src/diagnostics rev-parse --short HEAD))"
+   fi
 fi
 
 # Compute arch/config and create stable "current" symlinks for artifacts

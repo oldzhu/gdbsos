@@ -5,24 +5,18 @@
 
 // Mirror the LLDB plugin pattern: hold our own Extensions singleton in this DSO.
 namespace {
+
+// Hosting is initialized explicitly (no implicit lazy recursion here).
+
 class GdbPluginExtensions : public Extensions {
 public:
-    GdbPluginExtensions(IDebuggerServices* dbg) : Extensions(dbg) {}
-
+    explicit GdbPluginExtensions(IDebuggerServices* dbg) : Extensions(dbg) {}
     static void Initialize(IDebuggerServices* dbg) {
         if (s_extensions == nullptr) {
             s_extensions = new GdbPluginExtensions(dbg);
         }
     }
-
-    IHost* GetHost() override {
-    // GDB variant: defer managed hosting. LLDB plugin on PAL typically already
-    // has m_pHost set via external callback path. Returning nullptr here
-    // allows higher layers to explicitly trigger hosting only after the
-    // runtime is actually present (post module load), avoiding premature
-    // HostServices.Initialize and duplicate initialization/asserts.
-        return m_pHost;
-    }
+    IHost* GetHost() override { return m_pHost; }
 };
 } // anonymous namespace
 
