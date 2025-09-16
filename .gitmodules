@@ -5,3 +5,4 @@
 [submodule "src/runtime"]
 	path = src/runtime
 	url = https://github.com/dotnet/runtime.git
+        shallow = true
