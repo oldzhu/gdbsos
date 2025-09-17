@@ -1031,7 +1031,66 @@ class GdbServices:
             return 0x80070005
 
     def _dt_write_virtual(self, this_ptr, address, buffer, request, done_ptr):
-        return 0x80004001
+        # Implement ICLRDataTarget2::WriteVirtual so DAC can update target memory (e.g., JIT notification tables)
+        total = 0
+        try:
+            # Validate args
+            if not buffer or not request or request <= 0:
+                if done_ptr:
+                    try:
+                        done_ptr.contents.value = 0
+                    except Exception:
+                        pass
+                return 0
+
+            # Do not allow writes in core dump sessions
+            try:
+                if self._is_core_dump_session():
+                    if done_ptr:
+                        try:
+                            done_ptr.contents.value = 0
+                        except Exception:
+                            pass
+                    return 0x80004001  # E_NOTIMPL for dump analysis
+            except Exception:
+                # If detection fails, continue best-effort
+                pass
+
+            # Extract bytes from the provided buffer pointer
+            try:
+                data = ctypes.string_at(buffer, int(request))
+            except Exception as ex:
+                trace(f"[write_virtual] string_at failed: {ex}")
+                if done_ptr:
+                    try:
+                        done_ptr.contents.value = 0
+                    except Exception:
+                        pass
+                return 0x80070005  # E_ACCESSDENIED
+
+            # Prefer using gdb inferior API to write memory
+            try:
+                inferior = gdb.selected_inferior()
+                inferior.write_memory(int(address), data)
+                total = int(request)
+            except Exception as ex:
+                trace(f"[write_virtual] gdb write_memory failed: {ex}")
+                total = 0
+
+            if done_ptr:
+                try:
+                    done_ptr.contents.value = total
+                except Exception:
+                    pass
+            return 0 if total == int(request) else 0x80070005
+        except Exception as ex:
+            trace(f"_dt_write_virtual error: {ex}")
+            if done_ptr:
+                try:
+                    done_ptr.contents.value = total
+                except Exception:
+                    pass
+            return 0x80070005
 
     def _dt_get_tls_value(self, this_ptr, threadID, index, value_ptr):
         return 0x80004001
@@ -1566,7 +1625,27 @@ class GdbServices:
 
     def lldb_write_virtual(self, this_ptr, address, buffer, bufferSize, bytesWritten):
         trace("call into lldb_write_virtual")
-        return 0x80004001
+        # Delegate to the same implementation as ICLRDataTarget2::WriteVirtual
+        total = 0
+        try:
+            hr = self._dt_write_virtual(this_ptr, address, buffer, bufferSize, bytesWritten)
+            # Ensure bytesWritten is set even if caller passed a distinct pointer
+            if bytesWritten and (hr == 0):
+                try:
+                    # If _dt_write_virtual didn't update it (due to pointer mismatch), fill it here
+                    if not isinstance(bytesWritten.contents.value, int) or bytesWritten.contents.value == 0:
+                        bytesWritten.contents.value = int(bufferSize)
+                except Exception:
+                    pass
+            return hr
+        except Exception as ex:
+            trace(f"lldb_write_virtual error: {ex}")
+            try:
+                if bytesWritten:
+                    bytesWritten.contents.value = 0
+            except Exception:
+                pass
+            return 0x80070005
 
     def lldb_get_symbol_options(self, this_ptr, options):
         trace("call into lldb_get_symbol_options")
