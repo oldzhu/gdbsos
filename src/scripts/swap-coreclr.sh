@@ -42,7 +42,14 @@ SWAP_CORELIB="${SWAP_CORELIB:-1}"
 
 CORELIB_IL_DIR="${CORELIB_IL_DIR:-}" # allow override before computing source_dir dependent default
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+# Resolve repository root robustly. Prefer git, fallback to parent of parent of this script (since we're under src/scripts).
+if command -v git >/dev/null 2>&1; then
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+fi
+if [[ -z "${repo_root:-}" ]]; then
+  _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  repo_root="$(cd "${_SCRIPT_DIR}/../.." && pwd)"
+fi
 source_dir="$repo_root/$BUILD_ROOT/$BUILD_ARCH"
 if [ -z "$CORELIB_IL_DIR" ]; then
   CORELIB_IL_DIR="$source_dir/IL"

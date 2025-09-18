@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_with_capture.sh - convenience wrapper to start gdb with hang_capture.gdb batch
-# Usage: scripts/run_with_capture.sh <binary> [args...]
-# Example: scripts/run_with_capture.sh ./src/diagnostics/artifacts/bin/SimpleThrow/Release/net10.0/SimpleThrow
+# Usage: src/scripts/run_with_capture.sh <binary> [args...]
+# Example: src/scripts/run_with_capture.sh ./src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

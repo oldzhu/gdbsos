@@ -9,7 +9,15 @@ set -euo pipefail
 CONFIG=Release
 ARCH=""
 DIAG_DIR=""
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+
+# Resolve repository root robustly. Prefer git, fallback to parent of parent of this script (since we're under src/scripts).
+if command -v git >/dev/null 2>&1; then
+  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+fi
+if [[ -z "${REPO_ROOT:-}" ]]; then
+  _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  REPO_ROOT="$(cd "${_SCRIPT_DIR}/../.." && pwd)"
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +73,18 @@ fi
 
 echo "Deployed: ${BRIDGE_SO} -> ${DIAG_DIR}/libsosgdbbridge.so"
 
+# Also ensure the concrete config dir is updated (e.g., linux.x64.Debug)
+DIAG_CONF_DIR="${REPO_ROOT}/src/diagnostics/artifacts/bin/${OS}.${ARCH}.${CONFIG}"
+if [[ -d "${DIAG_CONF_DIR}" && "${DIAG_CONF_DIR}" != "${DIAG_DIR}" ]]; then
+  cp -f "${BRIDGE_SO}" "${DIAG_CONF_DIR}/"
+  chmod 755 "${DIAG_CONF_DIR}/libsosgdbbridge.so" || true
+  echo "Deployed: ${BRIDGE_SO} -> ${DIAG_CONF_DIR}/libsosgdbbridge.so"
+  if [[ -f "${BRIDGE_DBG}" ]]; then
+    cp -f "${BRIDGE_DBG}" "${DIAG_CONF_DIR}/"
+    echo "Deployed: ${BRIDGE_DBG} -> ${DIAG_CONF_DIR}/$(basename "${BRIDGE_DBG}")"
+  fi
+fi
+
 # If diagnostics 'current' exists and differs, copy there as well
 DIAG_CURRENT_DIR="${REPO_ROOT}/src/diagnostics/artifacts/bin/current"
 if [[ -d "${DIAG_CURRENT_DIR}" ]]; then
@@ -95,6 +115,11 @@ if [[ -d "${PY_SRC_DIR}" ]]; then
   if (( ${#PY_FILES[@]} > 0 )); then
     cp -f "${PY_FILES[@]}" "${DIAG_DIR}/"
     echo "Deployed Python files: ${#PY_FILES[@]} -> ${DIAG_DIR}"
+    # Keep config-specific dir in sync too
+    if [[ -d "${DIAG_CONF_DIR}" && "${DIAG_CONF_DIR}" != "${DIAG_DIR}" ]]; then
+      cp -f "${PY_FILES[@]}" "${DIAG_CONF_DIR}/"
+      echo "Deployed Python files to config dir: ${#PY_FILES[@]} -> ${DIAG_CONF_DIR}"
+    fi
     if [[ -d "${DIAG_CURRENT_DIR}" && "${DIAG_CURRENT_REAL}" != "${DIAG_DIR_REAL}" ]]; then
       cp -f "${PY_FILES[@]}" "${DIAG_CURRENT_DIR}/"
       echo "Deployed Python files to current: ${#PY_FILES[@]} -> ${DIAG_CURRENT_DIR}"

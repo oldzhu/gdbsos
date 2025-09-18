@@ -40,6 +40,8 @@ class GdbServices:
         # Optional hook provided by sos.py to update the managed host target PID via bridge
         # Set to a callable(pid:int)->HRESULT when the bridge is available; else None
         self._bridge_update_fn = None
+        # Track if a continue() has been scheduled to avoid duplicate requests
+        self._continue_pending = False
 
         iunknown_vtbl = IUnknownVtbl(QI_FUNC_TYPE(self.query_interface), ADDREF_FUNC_TYPE(self.add_ref), RELEASE_FUNC_TYPE(self.release))
 
@@ -215,7 +217,31 @@ class GdbServices:
         except Exception:
             pass
 
-    # (Removed) _schedule_safe_continue and _set_one_shot_pc_breakpoint: no longer auto-continuing from Python layer.
+    def _schedule_safe_continue(self):
+        """Schedule a safe asynchronous 'continue' to avoid reentrancy during callbacks."""
+        try:
+            if getattr(self, '_continue_pending', False):
+                return
+            self._continue_pending = True
+
+            def _do_continue():
+                try:
+                    gdb.execute('continue', to_string=True)
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        self._continue_pending = False
+                    except Exception:
+                        pass
+
+            gdb.post_event(_do_continue)
+        except Exception:
+            # As a last resort, try to continue synchronously (may be ignored by GDB)
+            try:
+                gdb.execute('continue', to_string=True)
+            except Exception:
+                pass
 
     def _is_core_dump_session(self) -> bool:
         """Detect if the current GDB session is a real core dump debugging session.
@@ -452,6 +478,20 @@ class GdbServices:
                 # Only notify SOS when it registered a callback and CoreCLR is present
                 if not getattr(self, "_exception_cb", None):
                     return
+                # Detect if this stop was caused by a C++ throw catchpoint so we can auto-continue in fallback mode only
+                is_cpp_throw = False
+                try:
+                    bps = getattr(event, 'breakpoints', None)
+                    if bps:
+                        for bp in bps:
+                            try:
+                                if getattr(bp, 'type', None) == gdb.BP_CATCHPOINT and 'throw' in (getattr(bp, 'location', '') or ''):
+                                    is_cpp_throw = True
+                                    break
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
                 # Defer exception notifications until runtime entry has been reached
                 if not getattr(self, "_runtime_initialized", False):
                     # Check if we've stopped at the runtime entry and mark initialized
@@ -504,7 +544,7 @@ class GdbServices:
                                                 ecb2 = ctypes.cast(self._exception_cb, ETYPE)
                                                 ehr2 = ecb2(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
                                                 trace_cat('bpmd', f"[stop-hook] exception after runtime-loaded HR=0x{int(ehr2) & 0xFFFFFFFF:08x}")
-                                                # Schedule a safe continue so we don't present a stop here
+                                                # Schedule a safe continue so we don't present a stop here (runtime entry only)
                                                 self._schedule_safe_continue()
                                                 return
                                             except Exception as ex2:
@@ -524,6 +564,11 @@ class GdbServices:
                 self._in_exception_callback = True
                 hr = ecb(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
                 trace_cat('bpmd', f"[stop-hook] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
+                # If this stop was a C++ throw catchpoint we installed via CLI fallback, auto-continue silently.
+                # Do NOT auto-continue on normal breakpoints (e.g., bpmd-managed breakpoints) or final unhandled exceptions.
+                if is_cpp_throw:
+                    self._schedule_safe_continue()
+                    return
             except Exception as ex:
                 trace(f"[stop-hook] error: {ex}")
             finally:
@@ -551,8 +596,9 @@ class GdbServices:
                     self._update_host_target_pid_if_possible()
                 except Exception as exu:
                     trace(f"[new-objfile] UpdateManagedTarget note: {exu}")
-                # Do not invoke runtime-loaded/exception callbacks here; defer until
-                # coreclr_execute_assembly is hit to avoid early DAC loads.
+                # Do not invoke callbacks or install throw catchpoints here. We defer to:
+                #  - runtime entry breakpoint to invoke RuntimeLoaded
+                #  - persistent C++ throw catchpoint installed when SetExceptionCallback is called
                 # One-shot: we can disconnect this hook after firing
                 try:
                     gdb.events.new_objfile.disconnect(self._newobj_handler)
@@ -1291,8 +1337,8 @@ class GdbServices:
                                 services_self._runtime_loaded_fired = True
                     except Exception as ex:
                         trace(f"RuntimeLoaded callback error: {ex}")
-                    # Stop here (return True) so user can inspect; host/native logic may choose to continue explicitly.
-                    return True
+                    # Auto-continue after calling the runtime-loaded callback to mirror LLDB behavior
+                    return False
 
             # Listen for lib loads in case symbol binding is delayed
             if not self._newobj_hook_registered:
@@ -1318,6 +1364,10 @@ class GdbServices:
                     trace('[runtime-bp] skip: coreclr_execute_assembly breakpoint already exists')
                 else:
                     self._runtime_loaded_bp = _RuntimeLoadedBP('coreclr_execute_assembly', temporary=True)
+                    try:
+                        self._runtime_loaded_bp.silent = True
+                    except Exception:
+                        pass
             except Exception:
                 # Fallback to command if constructor fails
                 try:
@@ -1370,16 +1420,71 @@ class GdbServices:
         try:
             self._exception_cb = cb
             trace_cat('bpmd', 'exception cb registered')
-            # Ensure our stop hook is connected so SOS receives notifications on every stop
-            if not self._stop_hook_registered:
-                try:
-                    gdb.events.stop.connect(self._stop_handler)
-                    self._stop_hook_registered = True
-                    trace("[stop-hook] connected")
-                except Exception as ex:
-                    trace(f"[stop-hook] connect error: {ex}")
-            # Defer notifications to real stops to avoid early DAC loads
-            # Also connect new-objfile hook to catch when CoreCLR loads later
+            # Ensure pending breakpoints allowed
+            try:
+                gdb.execute('set breakpoint pending on', to_string=True)
+            except Exception:
+                pass
+
+            # Install a persistent, silent C++ throw catchpoint that invokes the exception callback
+            try:
+                if getattr(self, '_cpp_exception_bp', None) is None:
+                    services_self = self
+
+                    class _CppThrowCatchpoint(gdb.Breakpoint):
+                        def __init__(bp_self):
+                            super().__init__('throw', type=gdb.BP_CATCHPOINT, temporary=False)
+                            bp_self.silent = True
+
+                        def stop(bp_self):
+                            try:
+                                # Ignore until runtime-loaded has fired to reduce early noise
+                                if not getattr(services_self, '_runtime_loaded_fired', False):
+                                    return False
+                                if not getattr(services_self, '_exception_cb', None):
+                                    return False
+                                ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
+                                ecb = ctypes.cast(services_self._exception_cb, ETYPE)
+                                hr = ecb(ctypes.c_void_p(ctypes.addressof(services_self.illldb_ptr)))
+                                trace_cat('bpmd', f"[exception-bp] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
+                            except Exception as ex:
+                                trace(f"[exception-bp] callback error: {ex}")
+                            # Continue automatically; this catchpoint is only for notifications
+                            return False
+
+                    try:
+                        self._cpp_exception_bp = _CppThrowCatchpoint()
+                        trace("[exception-bp] persistent C++ throw catchpoint installed")
+                    except Exception as ex_bppy:
+                        # Fallback: use CLI catchpoint and try to mark it silent
+                        trace(f"[exception-bp] Python catchpoint failed: {ex_bppy}; trying CLI 'catch throw'")
+                        try:
+                            out = gdb.execute('catch throw', to_string=True)
+                            _ = out  # suppress unused
+                        except Exception as ex_cli:
+                            trace(f"[exception-bp] CLI catch throw failed: {ex_cli}")
+                        # Try to locate the most recent catchpoint and mark silent
+                        try:
+                            newest = None
+                            for bp in (gdb.breakpoints() or []):
+                                try:
+                                    if getattr(bp, 'type', None) == gdb.BP_CATCHPOINT:
+                                        newest = bp
+                                except Exception:
+                                    pass
+                            if newest is not None:
+                                try:
+                                    newest.silent = True
+                                except Exception:
+                                    pass
+                                self._cpp_exception_bp = newest
+                                trace("[exception-bp] CLI catch throw installed and silenced")
+                        except Exception as ex_find:
+                            trace(f"[exception-bp] unable to locate/silence CLI catchpoint: {ex_find}")
+            except Exception as ex:
+                trace(f"[exception-bp] install error: {ex}")
+
+            # Connect new-objfile hook to catch when CoreCLR loads later
             if not self._newobj_hook_registered:
                 try:
                     gdb.events.new_objfile.connect(self._newobj_handler)
@@ -1394,6 +1499,18 @@ class GdbServices:
     def lldb_clear_exception_callback(self, this_ptr):
         trace("call into lldb_clear_exception_callback")
         self._exception_cb = None
+        # Remove C++ exception catchpoint if we created one
+        try:
+            bp = getattr(self, '_cpp_exception_bp', None)
+            if bp is not None:
+                try:
+                    bp.delete()
+                except Exception:
+                    pass
+                self._cpp_exception_bp = None
+                trace("[exception-bp] removed")
+        except Exception as ex:
+            trace(f"[exception-bp] remove error: {ex}")
         # Disconnect the stop hook if connected
         if self._stop_hook_registered:
             try:
