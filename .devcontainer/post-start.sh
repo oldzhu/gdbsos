@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Sync submodules to ensure diagnostics is present
-if command -v git >/dev/null 2>&1; then
-   if [[ $(git submodule status src/diagnostics) == -* ]]; then
-      git submodule update --remote --checkout src/diagnostics
-      git add src/diagnostics
-      git commit -m "Update submodule to latest main ($(git -C src/diagnostics rev-parse --short HEAD))"
-   fi
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+
+# Sync submodules to ensure diagnostics is sync with upstream main
+cd ${REPO_ROOT}/src/diagnostics
+LOCAL_COMMIT=$(git rev-parse HEAD)
+UPSTREAM_COMMIT=$(git ls-remote origin main | cut -f1)
+if [ "$LOCAL_COMMIT" != "$UPSTREAM_COMMIT" ]; then
+  echo "Upstream changes detected. Syncing..."
+  git fetch origin main
+  git merge origin/main
+  cd ${REPO_ROOT}
+  git add src/diagnostics
+  git commit -m "Update submodule to latest main ($UPSTREAM_COMMIT)"
+elif [ "$LOCAL_COMMIT" == "$UPSTREAM_COMMIT" ]; then
+  echo "No changes detected."
+  cd ${REPO_ROOT}
 fi
 
 # Compute arch/config and create stable "current" symlinks for artifacts
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
 OS="linux"
 UNAME_M="$(uname -m)"
 case "${UNAME_M}" in

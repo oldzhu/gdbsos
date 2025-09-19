@@ -1,5 +1,34 @@
 # FAQ and Troubleshooting
 
+## Breakpoints fail to set (W^X)
+
+Symptoms when trying to set a breakpoint in JITted/native code:
+
+- LLDB:
+
+  warning: failed to set breakpoint site at 0x7fff78d43e20 for breakpoint 1.1: error: 9 sending the breakpoint request
+
+- GDB:
+
+  Warning:
+  Cannot insert breakpoint 4.
+  Cannot access memory at address 0x7fff7841d470
+
+Cause: Write-Xor-Execute (W^X) policy for JIT code can prevent the debugger from patching an INT3 into executable pages in some environments.
+
+Workaround: Disable W^X for the .NET runtime before starting the debugger.
+
+```bash
+export DOTNET_EnableWriteXorExecute=0
+# then start your debugger
+lldb -- yourapp   # or
+gdb --args yourapp
+```
+
+Notes:
+- This environment variable must be set in the shell before launching lldb/gdb (and the target).
+- Re-enable later with `export DOTNET_EnableWriteXorExecute=1` if desired.
+
 ## Hosting initialization errors
 
 - 0x80070057 (E_INVALIDARG) from coreclr_initialize

@@ -485,13 +485,36 @@ class GdbServices:
                     if bps:
                         for bp in bps:
                             try:
-                                if getattr(bp, 'type', None) == gdb.BP_CATCHPOINT and 'throw' in (getattr(bp, 'location', '') or ''):
+                                loc = (getattr(bp, 'location', '') or '').lower()
+                                # Robust detection without depending on BP_CATCHPOINT constant
+                                if ('throw' in loc) or ('__cxa_throw' in loc):
                                     is_cpp_throw = True
                                     break
                             except Exception:
                                 pass
                 except Exception:
                     pass
+                # Fallback: inspect current function/symbol name to detect __cxa_throw
+                if not is_cpp_throw:
+                    try:
+                        fr = gdb.newest_frame()
+                        fn = None
+                        try:
+                            sym = fr.function() if fr else None
+                            fn = (getattr(sym, 'print_name', None) or getattr(sym, 'name', None) or '')
+                        except Exception:
+                            fn = ''
+                        if isinstance(fn, str) and '__cxa_throw' in fn:
+                            is_cpp_throw = True
+                        elif not is_cpp_throw:
+                            try:
+                                s = gdb.execute('info symbol $pc', to_string=True) or ''
+                                if '__cxa_throw' in s:
+                                    is_cpp_throw = True
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                 # Defer exception notifications until runtime entry has been reached
                 if not getattr(self, "_runtime_initialized", False):
                     # Check if we've stopped at the runtime entry and mark initialized
@@ -555,6 +578,9 @@ class GdbServices:
                             return
                     except Exception:
                         return
+                # After runtime is initialized, only handle C++ throw stops; ignore other stops
+                if not is_cpp_throw:
+                    return
                 path, base = self._scan_coreclr()
                 if not path or base is None:
                     return
@@ -562,13 +588,18 @@ class GdbServices:
                 ecb = ctypes.cast(self._exception_cb, ETYPE)
                 # Mark that we are in a callback-driven execute phase to let Execute() know
                 self._in_exception_callback = True
+                try:
+                    trace_cat('bpmd', '[stop-hook] handling C++ throw; invoking exception callback')
+                except Exception:
+                    pass
                 hr = ecb(ctypes.c_void_p(ctypes.addressof(self.illldb_ptr)))
-                trace_cat('bpmd', f"[stop-hook] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
-                # If this stop was a C++ throw catchpoint we installed via CLI fallback, auto-continue silently.
-                # Do NOT auto-continue on normal breakpoints (e.g., bpmd-managed breakpoints) or final unhandled exceptions.
-                if is_cpp_throw:
-                    self._schedule_safe_continue()
-                    return
+                try:
+                    trace_cat('bpmd', f"[stop-hook] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
+                except Exception:
+                    pass
+                # Auto-continue silently for exception notifications
+                self._schedule_safe_continue()
+                return
             except Exception as ex:
                 trace(f"[stop-hook] error: {ex}")
             finally:
@@ -648,7 +679,10 @@ class GdbServices:
 
     # --- IMemoryService ---
     def read_virtual(self, this_ptr, address, buffer, bytes_requested, bytes_read_ptr):
-        trace("call into read_virtual")
+        try:
+            trace_cat('read', f"read_virtual enter addr=0x{int(address):x} size={int(bytes_requested)}")
+        except Exception:
+            trace_cat('read', "read_virtual enter")
         total_read = 0
         try:
             inferior = gdb.selected_inferior()
@@ -689,10 +723,21 @@ class GdbServices:
                     remaining -= skip
             if bytes_read_ptr:
                 bytes_read_ptr.contents.value = total_read
+            try:
+                if total_read > 0:
+                    trace_cat('read', f"read_virtual OK bytes={total_read}")
+                else:
+                    trace_cat('read', f"read_virtual FAIL bytes={total_read}")
+            except Exception:
+                pass
             return 0 if total_read > 0 else 0x80070005
         except Exception:
             if bytes_read_ptr:
                 bytes_read_ptr.contents.value = total_read
+            try:
+                trace_cat('read', f"read_virtual EXCEPTION bytes={total_read}")
+            except Exception:
+                pass
             return 0x80070005
 
     # --- IHost ---
@@ -1037,6 +1082,10 @@ class GdbServices:
         # Prefer direct process_vm_readv to avoid re-entering GDB during DAC init
         total = 0
         try:
+            try:
+                trace_cat('read', f"_dt_read_virtual enter addr=0x{int(address):x} size={int(request)}")
+            except Exception:
+                pass
             if not buffer or request <= 0:
                 if done_ptr:
                     done_ptr.contents.value = 0
@@ -1063,23 +1112,43 @@ class GdbServices:
                     n = process_vm_readv(pid, ctypes.byref(local), 1, ctypes.byref(remote), 1, 0)
                     if n and n > 0:
                         total = int(n)
+                        try:
+                            trace_cat('read', f"_dt_read_virtual pv_readv OK bytes={total}")
+                        except Exception:
+                            pass
                 except Exception:
                     total = 0
             if total == 0:
                 # Fallback to GDB API in paged chunks
+                try:
+                    trace_cat('read', "_dt_read_virtual fallback to gdb.read_virtual")
+                except Exception:
+                    pass
                 return self.read_virtual(this_ptr, address, buffer, request, done_ptr)
             if done_ptr:
                 done_ptr.contents.value = total
+            try:
+                trace_cat('read', f"_dt_read_virtual OK bytes={total}")
+            except Exception:
+                pass
             return 0
         except Exception:
             if done_ptr:
                 done_ptr.contents.value = total
+            try:
+                trace_cat('read', f"_dt_read_virtual EXCEPTION bytes={total}")
+            except Exception:
+                pass
             return 0x80070005
 
     def _dt_write_virtual(self, this_ptr, address, buffer, request, done_ptr):
         # Implement ICLRDataTarget2::WriteVirtual so DAC can update target memory (e.g., JIT notification tables)
         total = 0
         try:
+            try:
+                trace_cat('write', f"_dt_write_virtual enter addr=0x{int(address):x} size={int(request)}")
+            except Exception:
+                pass
             # Validate args
             if not buffer or not request or request <= 0:
                 if done_ptr:
@@ -1087,6 +1156,10 @@ class GdbServices:
                         done_ptr.contents.value = 0
                     except Exception:
                         pass
+                try:
+                    trace_cat('write', "_dt_write_virtual zero-len or null buffer => OK(0)")
+                except Exception:
+                    pass
                 return 0
 
             # Do not allow writes in core dump sessions
@@ -1106,7 +1179,7 @@ class GdbServices:
             try:
                 data = ctypes.string_at(buffer, int(request))
             except Exception as ex:
-                trace(f"[write_virtual] string_at failed: {ex}")
+                trace_cat('write', f"_dt_write_virtual string_at failed: {ex}")
                 if done_ptr:
                     try:
                         done_ptr.contents.value = 0
@@ -1120,7 +1193,7 @@ class GdbServices:
                 inferior.write_memory(int(address), data)
                 total = int(request)
             except Exception as ex:
-                trace(f"[write_virtual] gdb write_memory failed: {ex}")
+                trace_cat('write', f"_dt_write_virtual gdb write_memory failed: {ex}")
                 total = 0
 
             if done_ptr:
@@ -1128,9 +1201,16 @@ class GdbServices:
                     done_ptr.contents.value = total
                 except Exception:
                     pass
+            try:
+                if total == int(request):
+                    trace_cat('write', f"_dt_write_virtual OK bytes={total}")
+                else:
+                    trace_cat('write', f"_dt_write_virtual FAIL bytes={total}")
+            except Exception:
+                pass
             return 0 if total == int(request) else 0x80070005
         except Exception as ex:
-            trace(f"_dt_write_virtual error: {ex}")
+            trace_cat('write', f"_dt_write_virtual EXCEPTION: {ex}")
             if done_ptr:
                 try:
                     done_ptr.contents.value = total
@@ -1332,11 +1412,11 @@ class GdbServices:
                             cb = ctypes.cast(services_self._runtime_loaded_cb, CBTYPE)
                             hr = cb(ctypes.c_void_p(ctypes.addressof(services_self.illldb_ptr)))
                             h = int(hr) & 0xFFFFFFFF
-                            trace(f"RuntimeLoaded callback HR=0x{h:08x}")
+                            trace_cat('bpmd', f"RuntimeLoaded callback HR=0x{h:08x}")
                             if h == 0:
                                 services_self._runtime_loaded_fired = True
                     except Exception as ex:
-                        trace(f"RuntimeLoaded callback error: {ex}")
+                        trace_cat('bpmd', f"RuntimeLoaded callback error: {ex}")
                     # Auto-continue after calling the runtime-loaded callback to mirror LLDB behavior
                     return False
 
@@ -1373,7 +1453,7 @@ class GdbServices:
                 try:
                     gdb.execute('tbreak coreclr_execute_assembly', to_string=True)
                 except Exception as ex2:
-                    trace(f"[runtime-bp] failed to set fallback bp: {ex2}")
+                    trace_cat('bpmd', f"[runtime-bp] failed to set fallback bp: {ex2}")
             return 0
         except Exception as ex:
             trace(f"lldb2_set_runtime_loaded_callback error: {ex}")
@@ -1425,20 +1505,23 @@ class GdbServices:
                 gdb.execute('set breakpoint pending on', to_string=True)
             except Exception:
                 pass
-
-            # Install a persistent, silent C++ throw catchpoint that invokes the exception callback
+            # Install persistent, silent Python breakpoints on __cxa_throw and __cxa_rethrow
+            # to mirror LLDB's exception breakpoint behavior without CLI 'Catchpoint' output.
             try:
-                if getattr(self, '_cpp_exception_bp', None) is None:
+                if not getattr(self, '_cpp_exception_bps', None):
                     services_self = self
 
-                    class _CppThrowCatchpoint(gdb.Breakpoint):
-                        def __init__(bp_self):
-                            super().__init__('throw', type=gdb.BP_CATCHPOINT, temporary=False)
-                            bp_self.silent = True
+                    class _CppExceptionBP(gdb.Breakpoint):
+                        def __init__(bp_self, loc: str):
+                            super().__init__(loc, temporary=False)
+                            try:
+                                bp_self.silent = True
+                            except Exception:
+                                pass
 
                         def stop(bp_self):
                             try:
-                                # Ignore until runtime-loaded has fired to reduce early noise
+                                # Reduce early noise before runtime has loaded
                                 if not getattr(services_self, '_runtime_loaded_fired', False):
                                     return False
                                 if not getattr(services_self, '_exception_cb', None):
@@ -1448,39 +1531,30 @@ class GdbServices:
                                 hr = ecb(ctypes.c_void_p(ctypes.addressof(services_self.illldb_ptr)))
                                 trace_cat('bpmd', f"[exception-bp] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
                             except Exception as ex:
-                                trace(f"[exception-bp] callback error: {ex}")
-                            # Continue automatically; this catchpoint is only for notifications
+                                trace_cat('bpmd', f"[exception-bp] callback error: {ex}")
+                            # Auto-continue; this breakpoint is notification-only
+                            try:
+                                services_self._schedule_safe_continue()
+                            except Exception:
+                                pass
                             return False
 
+                    bps = []
+                    # Create pending breakpoints; they will resolve when libstdc++ is loaded
                     try:
-                        self._cpp_exception_bp = _CppThrowCatchpoint()
-                        trace("[exception-bp] persistent C++ throw catchpoint installed")
-                    except Exception as ex_bppy:
-                        # Fallback: use CLI catchpoint and try to mark it silent
-                        trace(f"[exception-bp] Python catchpoint failed: {ex_bppy}; trying CLI 'catch throw'")
-                        try:
-                            out = gdb.execute('catch throw', to_string=True)
-                            _ = out  # suppress unused
-                        except Exception as ex_cli:
-                            trace(f"[exception-bp] CLI catch throw failed: {ex_cli}")
-                        # Try to locate the most recent catchpoint and mark silent
-                        try:
-                            newest = None
-                            for bp in (gdb.breakpoints() or []):
-                                try:
-                                    if getattr(bp, 'type', None) == gdb.BP_CATCHPOINT:
-                                        newest = bp
-                                except Exception:
-                                    pass
-                            if newest is not None:
-                                try:
-                                    newest.silent = True
-                                except Exception:
-                                    pass
-                                self._cpp_exception_bp = newest
-                                trace("[exception-bp] CLI catch throw installed and silenced")
-                        except Exception as ex_find:
-                            trace(f"[exception-bp] unable to locate/silence CLI catchpoint: {ex_find}")
+                        bps.append(_CppExceptionBP('__cxa_throw'))
+                        trace_cat('bpmd', "[exception-bp] installed '__cxa_throw' breakpoint")
+                    except Exception as ex_t:
+                        trace_cat('bpmd', f"[exception-bp] failed to set __cxa_throw: {ex_t}")
+                    try:
+                        bps.append(_CppExceptionBP('__cxa_rethrow'))
+                        trace_cat('bpmd', "[exception-bp] installed '__cxa_rethrow' breakpoint")
+                    except Exception as ex_r:
+                        trace_cat('bpmd', f"[exception-bp] failed to set __cxa_rethrow: {ex_r}")
+
+                    self._cpp_exception_bps = [bp for bp in bps if bp is not None]
+                    if not self._cpp_exception_bps:
+                        trace_cat('bpmd', "[exception-bp] warning: no exception symbol breakpoints installed")
             except Exception as ex:
                 trace(f"[exception-bp] install error: {ex}")
 
@@ -1492,6 +1566,14 @@ class GdbServices:
                     trace("[new-objfile] connected")
                 except Exception as ex:
                     trace(f"[new-objfile] connect error: {ex}")
+            # Connect stop hook to drive callback and auto-continue on C++ throw stops
+            if not getattr(self, '_stop_hook_registered', False):
+                try:
+                    gdb.events.stop.connect(self._stop_handler)
+                    self._stop_hook_registered = True
+                    trace_cat('bpmd', "[stop-hook] connected")
+                except Exception as ex:
+                    trace_cat('bpmd', f"[stop-hook] connect error: {ex}")
             return 0
         except Exception:
             return 0x80004005
@@ -1499,16 +1581,18 @@ class GdbServices:
     def lldb_clear_exception_callback(self, this_ptr):
         trace("call into lldb_clear_exception_callback")
         self._exception_cb = None
-        # Remove C++ exception catchpoint if we created one
+        # Remove C++ exception symbol breakpoints if we created them
         try:
-            bp = getattr(self, '_cpp_exception_bp', None)
-            if bp is not None:
-                try:
-                    bp.delete()
-                except Exception:
-                    pass
-                self._cpp_exception_bp = None
-                trace("[exception-bp] removed")
+            bps = getattr(self, '_cpp_exception_bps', None)
+            if bps:
+                for bp in list(bps):
+                    try:
+                        if bp is not None:
+                            bp.delete()
+                    except Exception:
+                        pass
+                self._cpp_exception_bps = []
+                trace("[exception-bp] removed __cxa_throw/__cxa_rethrow breakpoints")
         except Exception as ex:
             trace(f"[exception-bp] remove error: {ex}")
         # Disconnect the stop hook if connected
@@ -1737,11 +1821,17 @@ class GdbServices:
         return 0x80004001
 
     def lldb_read_virtual(self, this_ptr, address, buffer, bufferSize, bytesRead):
-        trace("call into lldb_read_virtual")
+        try:
+            trace_cat('read', f"lldb_read_virtual enter addr=0x{int(address):x} size={int(bufferSize)}")
+        except Exception:
+            pass
         return self.read_virtual(this_ptr, address, buffer, bufferSize, bytesRead)
 
     def lldb_write_virtual(self, this_ptr, address, buffer, bufferSize, bytesWritten):
-        trace("call into lldb_write_virtual")
+        try:
+            trace_cat('write', f"lldb_write_virtual enter addr=0x{int(address):x} size={int(bufferSize)}")
+        except Exception:
+            pass
         # Delegate to the same implementation as ICLRDataTarget2::WriteVirtual
         total = 0
         try:
@@ -1754,9 +1844,18 @@ class GdbServices:
                         bytesWritten.contents.value = int(bufferSize)
                 except Exception:
                     pass
+            try:
+                bw = 0
+                try:
+                    bw = bytesWritten.contents.value if bytesWritten else 0
+                except Exception:
+                    bw = 0
+                trace_cat('write', f"lldb_write_virtual exit hr=0x{int(hr) & 0xFFFFFFFF:08x} bytes={bw}")
+            except Exception:
+                pass
             return hr
         except Exception as ex:
-            trace(f"lldb_write_virtual error: {ex}")
+            trace_cat('write', f"lldb_write_virtual EXCEPTION: {ex}")
             try:
                 if bytesWritten:
                     bytesWritten.contents.value = 0
