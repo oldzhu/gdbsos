@@ -9,6 +9,19 @@ Usage
 - Co-location required: libsosgdbbridge.so must be next to diagnostics' libsos.so.
 - In GDB: source /path/to/src/diagnostics/artifacts/bin/current/sos.py to register commands.
 
+Help and commands
+- New: prefix command 'sos' with subcommands. Try:
+	- help sos              # lists only SOS commands with one-line descriptions
+	- help sos dumpheap     # per-command help (managed when runtime is loaded)
+	- sos dumpheap -stat    # invoke an SOS subcommand
+- Fallback dispatcher:
+	- sos exec <cmd> [args] # runs any SOS command name dynamically (if not pre-registered)
+- Top-level aliases:
+	- By default, top-level commands (bpmd, clrstack, dumpheap, ...) are also registered.
+	- To keep GDB's 'help data' uncluttered, disable them with:
+		- export SOS_GDB_TOPLEVEL_ALIASES=0
+	- The 'help' command itself is not shadowed; use 'sos help' or 'sos soshelp' for SOS help.
+
 Dev Container
 - Reopen folder in container; submodules sync/init runs automatically.
 - Manual build inside container:

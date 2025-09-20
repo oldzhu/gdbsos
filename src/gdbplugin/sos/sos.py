@@ -141,10 +141,16 @@ def _hint_for_hresult(hr: int) -> str:
 
 
 class SOSCommand(gdb.Command):
-    """A base class for SOS commands that handles loading libsos."""
-    def __init__(self, name):
+    """Per-command SOS wrapper that loads libsos and dispatches native/managed handlers."""
+    def __init__(self, name, helptext: Optional[str] = None):
+        # name may be either a top-level command (e.g., "dumpheap") or a subcommand (e.g., "sos dumpheap")
         super(SOSCommand, self).__init__(name, gdb.COMMAND_DATA)
         self.name = name
+        # Note: GDB's help system reads the class docstring, not instance doc, for command help.
+        # We create dynamic subclasses with per-command class __doc__ at registration time.
+        if helptext:
+            # Keep as a fallback in case some GDB versions consult instance-level __doc__
+            self.__doc__ = helptext
     # Defer libsos/SOS initialization until a command is actually invoked
     # (align with LLDB plugin behavior). We'll load on-demand in invoke().
 
@@ -389,31 +395,32 @@ class SOSCommand(gdb.Command):
             # We no longer fabricate a Python host fallback to avoid creating a 2nd host/runtime.
             use_host = os.environ.get('SOS_GDB_USE_HOST', '1') not in ('', '0', 'false', 'False')
             if use_host and not native_host_ptr and getattr(SOSCommand, 'bridge_handle', None):
-                # Attempt a proactive managed hosting initialization on the native side.
-                try:
-                    init_managed = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
-                    if init_managed is not None:
-                        # Best-effort: we don't always know runtime directory yet; pass nulls.
-                        init_managed.argtypes = [ctypes.c_char_p, ctypes.c_int]
-                        init_managed.restype = ctypes.c_int
-                        hr_host = init_managed(None, 0)
-                        if TRACE_ENABLED:
-                            gdb.write(f"[sos] InitManagedHosting retry hr=0x{hr_host & 0xFFFFFFFF:08x}\n")
-                        # Requery host pointer after attempt
-                        try:
-                            get_host = getattr(SOSCommand.bridge_handle, 'GetHostForSos', None)
-                            if get_host is not None:
-                                get_host.argtypes = []
-                                get_host.restype = ctypes.c_void_p
-                                native_host_ptr = get_host()
-                                if TRACE_ENABLED and native_host_ptr:
-                                    gdb.write(f"[sos] Native IHost acquired after retry: 0x{native_host_ptr:x}\n")
-                        except Exception as ex2:
+                # Do NOT start managed hosting until the target CLR is actually loaded.
+                # This prevents pre-run help from trying to use managed plumbing and failing.
+                if SOSCommand._is_runtime_loaded():
+                    try:
+                        init_managed = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
+                        if init_managed is not None:
+                            init_managed.argtypes = [ctypes.c_char_p, ctypes.c_int]
+                            init_managed.restype = ctypes.c_int
+                            hr_host = init_managed(None, 0)
                             if TRACE_ENABLED:
-                                gdb.write(f"[sos] Host requery note: {ex2}\n")
-                except Exception as ex1:
-                    if TRACE_ENABLED:
-                        gdb.write(f"[sos] InitManagedHosting retry exception: {ex1}\n")
+                                gdb.write(f"[sos] InitManagedHosting retry hr=0x{hr_host & 0xFFFFFFFF:08x}\n")
+                            # Requery host pointer after attempt
+                            try:
+                                get_host = getattr(SOSCommand.bridge_handle, 'GetHostForSos', None)
+                                if get_host is not None:
+                                    get_host.argtypes = []
+                                    get_host.restype = ctypes.c_void_p
+                                    native_host_ptr = get_host()
+                                    if TRACE_ENABLED and native_host_ptr:
+                                        gdb.write(f"[sos] Native IHost acquired after retry: 0x{native_host_ptr:x}\n")
+                            except Exception as ex2:
+                                if TRACE_ENABLED:
+                                    gdb.write(f"[sos] Host requery note: {ex2}\n")
+                    except Exception as ex1:
+                        if TRACE_ENABLED:
+                            gdb.write(f"[sos] InitManagedHosting retry exception: {ex1}\n")
 
             if use_host:
                 if native_host_ptr:
@@ -464,38 +471,88 @@ class SOSCommand(gdb.Command):
                 pass
             # If CLR just became available after earlier failures, clear stale error state once
             SOSCommand._maybe_flush_after_runtime_load()
+            # Determine the logical SOS command name (last token to support 'sos <cmd>')
+            try:
+                lower_name = (self.name or "").split()[-1].lower()
+            except Exception:
+                lower_name = (self.name or "").lower()
             # For help/soshelp, prefer managed help when CLR is loaded for richer output
-            lower_name = self.name.lower()
             # LLDB-aligned: deliver bpmd immediately even if CLR not loaded
             # (libsos native export path will set runtime callbacks/pending bp if supported).
             # No pre-CLR queuing or local pending bp planting here.
             # We simply fall through to dispatch below.
             if lower_name in ("help", "soshelp"):
-                # Attempt managed 'help' first when possible
-                if SOSCommand._is_runtime_loaded() and SOSCommand._try_initialize_hosting_if_needed():
-                    cmd = b"help"
-                    args = (arg or "").encode('utf-8')
-                    # Try bridge first
+                # Special-case behavior for LLDB parity:
+                # - 'help' should NOT initialize hosting; show managed help only if runtime already loaded
+                # - 'soshelp' SHOULD attempt to initialize hosting and show managed help; else fallback to static
+                if lower_name == "soshelp":
+                    # 0) Prefer native Help export first; it may print a partial list and/or try to initialize hosting
+                    try:
+                        sos_help = getattr(SOSCommand.sos_handle, "Help")
+                        sos_help.argtypes = [PVOID, PCSTR]
+                        sos_help.restype = HRESULT
+                        client_ptr = ctypes.byref(SOSCommand.gdb_services.illldb_ptr)
+                        hrh = sos_help(client_ptr, (arg or "").encode('utf-8'))
+                        if hrh == 0:
+                            return
+                    except Exception:
+                        pass
+                    # 1) Attempt relaxed hosting init regardless of runtime load state
+                    try:
+                        hres = None
+                        if getattr(SOSCommand, 'sos_init_hosting', None):
+                            hres = SOSCommand.sos_init_hosting(None, 0)
+                        elif getattr(SOSCommand, 'bridge_handle', None):
+                            init_hosting = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
+                            if init_hosting is not None:
+                                init_hosting.argtypes = [ctypes.c_char_p, ctypes.c_int]
+                                init_hosting.restype = ctypes.c_int
+                                hres = init_hosting(None, 0)
+                        # ignore hres; proceed to managed help attempt regardless
+                    except Exception:
+                        pass
+                    # 2) Try managed 'help'
                     try:
                         bridge = getattr(SOSCommand, 'bridge_handle', None)
                         if bridge is not None:
                             dispatch = bridge.DispatchManagedCommand
                             dispatch.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
                             dispatch.restype = ctypes.c_int
-                            hres = dispatch(cmd, args)
-                            if hres == 0:
+                            if dispatch(b"help", (arg or "").encode('utf-8')) == 0:
                                 return
                     except Exception:
                         pass
-                    # Try libsos forwarder
                     try:
                         if getattr(SOSCommand, 'sos_dispatch_managed', None):
-                            hres2 = SOSCommand.sos_dispatch_managed(cmd, args)
-                            if hres2 == 0:
+                            if SOSCommand.sos_dispatch_managed(b"help", (arg or "").encode('utf-8')) == 0:
                                 return
                     except Exception:
                         pass
-                # Fallback to native path below
+                    # 3) Static fallback
+                    _print_sos_help_static(arg)
+                    return
+                else:
+                    # 'help' command: do not initialize hosting, but use managed if runtime is ready
+                    if SOSCommand._is_runtime_loaded() and SOSCommand._try_initialize_hosting_if_needed():
+                        try:
+                            bridge = getattr(SOSCommand, 'bridge_handle', None)
+                            if bridge is not None:
+                                dispatch = bridge.DispatchManagedCommand
+                                dispatch.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+                                dispatch.restype = ctypes.c_int
+                                if dispatch(b"help", (arg or "").encode('utf-8')) == 0:
+                                    return
+                        except Exception:
+                            pass
+                        try:
+                            if getattr(SOSCommand, 'sos_dispatch_managed', None):
+                                if SOSCommand.sos_dispatch_managed(b"help", (arg or "").encode('utf-8')) == 0:
+                                    return
+                        except Exception:
+                            pass
+                    # Static help if runtime isn't ready
+                    _print_sos_help_static(arg)
+                    return
 
             # Prefer native exports first to avoid managed noise like "Unrecognized SOS command".
             # Resolve the exported SOS symbol for this command
@@ -523,13 +580,21 @@ class SOSCommand(gdb.Command):
                 return
 
             # Native export not found; try managed dispatch next
-            cmd = self.name.lower().encode('utf-8')
+            cmd = lower_name.encode('utf-8')
             args = (arg or "").encode('utf-8')
             bridge = getattr(SOSCommand, 'bridge_handle', None)
             hres_bridge = None
             hosting_initialized = False
             # Ensure hosting is initialized only when CLR is present, mirroring LLDB behavior
+            if not SOSCommand._is_runtime_loaded():
+                # No CLR yet: provide a friendly message for managed-only commands
+                if lower_name in ("help", "soshelp"):
+                    gdb.write("SOS help is limited until the .NET runtime is loaded. Use 'help sos' to list available commands.\n")
+                else:
+                    gdb.write("This command is managed-only and requires the .NET runtime to be loaded.\n")
+                return
             if not SOSCommand._try_initialize_hosting_if_needed():
+                gdb.write("Managed hosting is not initialized; try 'sethostruntime' after the CLR loads.\n")
                 return
             if bridge is not None:
                 try:
@@ -587,10 +652,115 @@ class SOSCommand(gdb.Command):
 
 
 
-class SosUmbrellaCommand(gdb.Command):
-    """sos <command> [args] — Dispatch any SOS command without per-command wrappers."""
+class SosPrefixCommand(gdb.Command):
+    """SOS diagnostics commands. Use 'sos <command>' or see 'help sos <command>'."""
     def __init__(self):
-        super(SosUmbrellaCommand, self).__init__("sos", gdb.COMMAND_DATA)
+        # True prefix command so 'help sos' lists subcommands cleanly
+        super(SosPrefixCommand, self).__init__("sos", gdb.COMMAND_DATA, prefix=True)
+        self.__doc__ = "SOS diagnostics commands. Type 'help sos' to list subcommands."
+
+    def invoke(self, arg, from_tty):
+        # If called without a subcommand, show brief guidance
+        gdb.write("Usage: sos <command> [args]. Try 'help sos' for a list of commands.\n")
+
+
+# Unified list of commands we register (used for both registration and static help)
+COMMAND_NAMES = [
+    # Native exports
+    "clrstack", "clrthreads", "clru", "dbgout", "bpmd", "dumpalc", "dumparray", "dumpassembly",
+    "dumpclass", "dumpdelegate", "dumpdomain", "dumpgcdata", "dumpil", "dumplog", "dumpmd",
+    "dumpmodule", "dumpmt", "dumpobj", "dumpsig", "dumpsigelem", "dumpstack", "dumpvc",
+    "eestack", "eeversion", "ehinfo", "findappdomain", "findroots", "gchandles", "gcinfo",
+    "histclear", "histinit", "histobj", "histobjfind", "histroot", "histstats", "ip2md",
+    "name2ee", "pe", "printexception", "runtimes", "stoponcatch", "setclrpath", "soshelp",
+    "sosstatus", "sosflush", "syncblk", "threadstate", "token2ee",
+    # Managed or both
+    "help", "analyzeoom", "assemblies", "clrmodules", "crashinfo", "dumpasync", "dumpheap", "dumphttp",
+    "dumpruntimetypes", "dumprequests", "dumpstackobjects", "dso", "eeheap", "gcroot",
+    "gcwhere", "listnearobj", "loadsymbols", "logging", "objsize", "pathto", "setsymbolserver",
+    "threadpool", "verifyheap", "verifyobj", "traverseheap", "gcheapstat", "finalizequeue",
+]
+
+
+def _print_sos_help_static(arg: Optional[str]):
+    """Print a static, LLDB-like soshelp listing before the CLR loads (or when hosting isn't ready)."""
+    def line_for(cmd: str) -> str:
+        desc = COMMAND_HELP.get(cmd)
+        if not desc:
+            # fall back to a generic description
+            desc = f"Run SOS command '{cmd}'."
+        return f"{cmd} -- {desc}\n"
+
+    # Exact LLDB-style header lines and order for pre-run soshelp
+    LLDB_STATIC_BLOCK = [
+        "crashinfo                                 Displays the crash details that created the dump.",
+        "d, readmemory <address>                   Dumps memory contents.",
+        "da <address>                              Dumps memory as zero-terminated byte strings.",
+        "db <address>                              Dumps memory as bytes.",
+        "dc <address>                              Dumps memory as chars.",
+        "dd <address>                              Dumps memory as dwords (uint).",
+        "dp <address>                              Dumps memory as pointers.",
+        "dq <address>                              Dumps memory as qwords (ulong).",
+        "du <address>                              Dumps memory as zero-terminated char strings.",
+        "dw <address>                              Dumps memory as words (ushort).",
+        "help, soshelp <command>                   Displays help for a command.",
+        "loadsymbols <url>                         Loads symbols for all modules.",
+        "logclose <path>                           Disables console file logging.",
+        "logging <path>                            Enables/disables internal diagnostic logging.",
+        "logopen <path>                            Enables console file logging.",
+        "modules, lm                               Displays the native modules in the process.",
+        "registers, r                              Displays the thread's registers.",
+        "runtimes, setruntime <id>                 Lists the runtimes in the target or changes the default runtime.",
+        "setclrpath <path>                         Sets the path to load coreclr DAC/DBI files.",
+        "setsymbolserver, SetSymbolServer <url>    Enables and sets symbol server support for symbols and module download.",
+        "sosflush                                  Resets the internal cached state.",
+        "sosstatus                                 Displays internal status.",
+        "threads, setthread <thread>               Lists the threads in the target or sets the current thread.",
+    ]
+
+    # If a specific command is requested, try to print the most relevant single line
+    if arg:
+        token = arg.strip().split()[0].lower()
+        # Try to find a matching LLDB-style line first
+        for ln in LLDB_STATIC_BLOCK:
+            head = ln.split()[0].rstrip(',')
+            # Also check for alias matches separated by comma in the first token
+            aliases = ln.split()[0].split(',') if ',' in ln.split()[0] else [head]
+            aliases = [a.strip().lower() for a in aliases]
+            if token in aliases:
+                gdb.write(ln + "\n")
+                return
+        # Fall back to our dynamic description
+        gdb.write(line_for(token))
+        return
+
+    # Print the LLDB-style block first in the exact order
+    for ln in LLDB_STATIC_BLOCK:
+        gdb.write(ln + "\n")
+
+    # Then print the rest of SOS commands (exclude ones already covered by the block or generic 'help')
+    printed = set()
+    # Collect aliases we already printed in the LLDB block
+    for ln in LLDB_STATIC_BLOCK:
+        # extract tokens up to the first double space sequence
+        head = ln.split()[0]
+        # handle alias heads like 'help,' or 'modules,'
+        for alias in [a.strip().lower().rstrip(',') for a in head.split(',')]:
+            if alias:
+                printed.add(alias)
+    printed.update({'help'})
+
+    for cmd in sorted(COMMAND_NAMES):
+        if cmd in printed:
+            continue
+        gdb.write(line_for(cmd))
+
+
+class SosExecUmbrellaCommand(gdb.Command):
+    """sos exec <command> [args] — Fallback dynamic dispatcher for any SOS command."""
+    def __init__(self):
+        super(SosExecUmbrellaCommand, self).__init__("sos exec", gdb.COMMAND_DATA)
+        self.__doc__ = "Dispatch an SOS command dynamically (use if a subcommand isn't registered)."
 
     def _to_export_candidates(self, cmd: str):
         return _to_export_candidates_common(cmd)
@@ -600,7 +770,7 @@ class SosUmbrellaCommand(gdb.Command):
             return
         parts = arg.strip().split(None, 1) if arg else []
         if not parts:
-            gdb.write("Usage: sos <command> [args]\n")
+            gdb.write("Usage: sos exec <command> [args]\n")
             return
         name = parts[0].lower()
         rest = parts[1] if len(parts) > 1 else ""
@@ -640,14 +810,16 @@ class SosUmbrellaCommand(gdb.Command):
                             return
                 except Exception:
                     pass
-            # Fall through to native resolution below if managed isn't available
+            # Fall back to static help if managed isn't available
+            _print_sos_help_static(rest)
+            return
 
         # Friendly notice for WinDbg/cdb-only commands
         if name in _UNSUPPORTED_WINDBG_ONLY:
             gdb.write("This command is only supported under windbg/cdb currently\n")
             return
 
-        # 1) Try native export first to avoid managed-side warning output
+    # 1) Try native export first to avoid managed-side warning output
         tried = []
         sos_func = None
         for sym in self._to_export_candidates(name):
@@ -701,8 +873,8 @@ class SosUmbrellaCommand(gdb.Command):
             pass
         gdb.write(f"Error: Command '{name}' not found (tried symbols: {', '.join(tried)}).\n")
 
-
-SosUmbrellaCommand()
+SosPrefixCommand()
+SosExecUmbrellaCommand()
 
 
 class ExtUmbrellaCommand(gdb.Command):
@@ -711,7 +883,8 @@ class ExtUmbrellaCommand(gdb.Command):
         super(ExtUmbrellaCommand, self).__init__("ext", gdb.COMMAND_DATA)
 
     def invoke(self, arg, from_tty):
-        gdb.execute(f"sos {arg}")
+        # Delegate to 'sos exec' to allow any SOS command name
+        gdb.execute(f"sos exec {arg}")
 
 
 ExtUmbrellaCommand()
@@ -762,12 +935,77 @@ class SetHostRuntimeCommand(gdb.Command):
 
 SetHostRuntimeCommand()
 
+COMMAND_HELP = {
+    # A concise, high-level description for each command shown in 'help sos'
+    "bpmd": "Break on a managed method (name or token).",
+    "clrstack": "Display the managed stack trace for the current thread.",
+    "clrthreads": "List managed threads and their states.",
+    "dumpheap": "Display GC heap statistics and objects (filterable).",
+    "dumpobj": "Dump details about a managed object at an address.",
+    "dumpmt": "Display method table details for a type.",
+    "dumpclass": "Dump details about a managed EEClass/TypeDesc.",
+    "dumpmodule": "Show module information and contained types.",
+    "dumpassembly": "Show information about a managed assembly.",
+    "dumpalc": "List AssemblyLoadContext instances.",
+    "gcroot": "Find object roots that reference the target object.",
+    "gcwhere": "Show where an object is located in the GC heap.",
+    "threadpool": "Display ThreadPool statistics and queues.",
+    "eeheap": "Display segments from the GC and loader heaps.",
+    "syncblk": "Display SyncBlock (lock) statistics and owners.",
+    "soshelp": "List SOS commands and usage (managed when available).",
+    "help": "List SOS commands and usage (same as soshelp).",
+    "ip2md": "Map an instruction pointer to its MethodDesc.",
+    "name2ee": "Resolve a type/method name to MethodDesc or EEClass.",
+    "printexception": "Display the last managed exception (or at address).",
+    "pe": "Alias for printexception.",
+    "runtimes": "List .NET runtimes loaded in the target.",
+    "sosstatus": "Display SOS internal status information.",
+    "sosflush": "Flush SOS caches and state (advanced).",
+    "loadsymbols": "Configure or trigger symbol loading.",
+    "setsymbolserver": "Configure symbol server settings.",
+    "logging": "Enable/disable SOS internal logging (managed).",
+    "dumpstack": "Show mixed (managed/native) stack trace (best-effort).",
+    "dumpstackobjects": "List managed objects on the current stack.",
+    "dso": "Alias for dumpstackobjects.",
+    "clrmodules": "List managed modules/assemblies in the process.",
+    "assemblies": "List assemblies and load contexts.",
+    "threadstate": "Display detailed thread state for a managed thread.",
+    "gcinfo": "Dump GC info for a JITted method.",
+    "dumparray": "Display elements of a managed array.",
+    "dumpdelegate": "Dump target and fields of a delegate.",
+    "dumpgcdata": "Dump GC internal data structures (advanced).",
+    "dumpil": "Display IL for a method.",
+    "dumplog": "Dump internal runtime or SOS log (if enabled).",
+    "dumpmd": "Display MethodDesc and flags for a method.",
+    "dumpsig": "Decode and display a signature blob.",
+    "dumpsigelem": "Display a single signature element.",
+    "dumpvc": "Display a value class (struct) instance.",
+    "eestack": "Display only the managed portion of the stack.",
+    "eeversion": "Display CLR version information.",
+    "ehinfo": "Display exception handling (EH) clauses for a method.",
+    "findappdomain": "Find the app domain for an object/module.",
+    "findroots": "Find object roots with filters.",
+    "gchandles": "Enumerate GC handles.",
+    "histclear": "Clear allocation/stack history information.",
+    "histinit": "Initialize allocation/stack history collection.",
+    "histobj": "Display allocation history for an object.",
+    "histobjfind": "Find objects by allocation history.",
+    "histroot": "Display roots recorded in history.",
+    "histstats": "Display allocation/stack history statistics.",
+    "listnearobj": "List objects near the specified address.",
+    "objsize": "Display the size of a managed object graph.",
+    "pathto": "Find a path between two objects.",
+    "setclrpath": "Set path to CLR binaries (legacy).",
+    "stoponcatch": "Enable/disable stop on managed exception catch.",
+    "token2ee": "Map metadata token to EE structures.",
+}
 
-# Register the same command set LLDB does for parity and direct use without 'sos' prefix
+
 def _register_default_commands():
+    # Full set of commonly used commands (native exports and managed)
     names = [
         # Native exports
-    "clrstack", "clrthreads", "clru", "dbgout", "bpmd", "dumpalc", "dumparray", "dumpassembly",
+        "clrstack", "clrthreads", "clru", "dbgout", "bpmd", "dumpalc", "dumparray", "dumpassembly",
         "dumpclass", "dumpdelegate", "dumpdomain", "dumpgcdata", "dumpil", "dumplog", "dumpmd",
         "dumpmodule", "dumpmt", "dumpobj", "dumpsig", "dumpsigelem", "dumpstack", "dumpvc",
         "eestack", "eeversion", "ehinfo", "findappdomain", "findroots", "gchandles", "gcinfo",
@@ -775,26 +1013,48 @@ def _register_default_commands():
         "name2ee", "pe", "printexception", "runtimes", "stoponcatch", "setclrpath", "soshelp",
         "sosstatus", "sosflush", "syncblk", "threadstate", "token2ee",
         # Managed or both
-    "analyzeoom", "assemblies", "clrmodules", "crashinfo", "dumpasync", "dumpheap", "dumphttp",
+        "help", "analyzeoom", "assemblies", "clrmodules", "crashinfo", "dumpasync", "dumpheap", "dumphttp",
         "dumpruntimetypes", "dumprequests", "dumpstackobjects", "dso", "eeheap", "gcroot",
         "gcwhere", "listnearobj", "loadsymbols", "logging", "objsize", "pathto", "setsymbolserver",
         "threadpool", "verifyheap", "verifyobj", "traverseheap", "gcheapstat", "finalizequeue",
     ]
+
+    def _mk_cls_for(name: str, helptext: str):
+        # Create a dynamic subclass so the class-level __doc__ is unique per command for GDB help
+        clsname = "SOSCmd_" + re.sub(r"[^0-9A-Za-z_]", "_", name)
+        attrs = {"__doc__": helptext}
+        return type(clsname, (SOSCommand,), attrs)
+
+    # 1) Register 'sos <name>' subcommands (prefix-based) with per-command help
     for n in names:
         try:
-            SOSCommand(n)
+            helptext = COMMAND_HELP.get(n, f"Run SOS command '{n}'.")
+            Cmd = _mk_cls_for(f"sos {n}", helptext)
+            Cmd(f"sos {n}")
         except Exception:
             pass
 
+    # 2) Optional top-level aliases (to avoid clutter set SOS_GDB_TOPLEVEL_ALIASES=0)
+    if os.environ.get('SOS_GDB_TOPLEVEL_ALIASES', '1').lower() not in ('0', 'false', 'no'):
+        for n in names:
+            if n == 'help':
+                continue  # don't shadow GDB's built-in 'help'
+            try:
+                helptext = COMMAND_HELP.get(n, f"Run SOS command '{n}'.")
+                Cmd = _mk_cls_for(n, helptext)
+                Cmd(n)
+            except Exception:
+                pass
+
 
 _register_default_commands()
-
 
 # Register stubs for WinDbg/cdb-only commands so direct invocation prints a clear message.
 class UnsupportedSosCommand(gdb.Command):
     def __init__(self, name: str):
         super(UnsupportedSosCommand, self).__init__(name, gdb.COMMAND_SUPPORT)
         self._name = name
+        self.__doc__ = "This command is only supported under windbg/cdb currently."
 
     def invoke(self, arg, from_tty):
         gdb.write("This command is only supported under windbg/cdb currently\n")
@@ -805,3 +1065,343 @@ for _n in sorted(_UNSUPPORTED_WINDBG_ONLY):
         UnsupportedSosCommand(_n)
     except Exception:
         pass
+
+# Also register 'sos <name>' stubs for unsupported commands so they appear under 'help sos'
+for _n in sorted(_UNSUPPORTED_WINDBG_ONLY):
+    try:
+        # Create as a separate class instance per name
+        class _StubCmd(UnsupportedSosCommand):
+            def __init__(self, nm):
+                super(_StubCmd, self).__init__(nm)
+        _StubCmd(f"sos {_n}")
+    except Exception:
+        pass
+
+
+# Thin wrapper utilities and aliases (LLDB-style), registered under 'sos' and safe top-level aliases.
+def _register_wrapper_commands():
+    def _top_level_ok(name: str) -> bool:
+        # Honor env gate and avoid clobbering well-known gdb commands (e.g., 'r' and possibly 'd').
+        if os.environ.get('SOS_GDB_TOPLEVEL_ALIASES', '1').lower() in ('0', 'false', 'no'):
+            return False
+        if name in { 'r', 'd' }:
+            return False
+        return True
+
+    # Memory dump helpers -----------------------------------------------------
+    def _mk_mem_cmd(cmd_name: str, fmt: str, default_count: int, doc: str):
+        class _MemCmd(gdb.Command):
+            __doc__ = doc
+            def __init__(self, nm):
+                super(_MemCmd, self).__init__(nm, gdb.COMMAND_DATA)
+            def invoke(self, arg, from_tty):
+                # Parse: <address> [count]
+                addr = None
+                count = default_count
+                if arg:
+                    toks = arg.strip().split()
+                    if len(toks) >= 2:
+                        # Treat last token as count if it parses
+                        try:
+                            count = int(toks[-1], 0)
+                            addr = ' '.join(toks[:-1])
+                        except Exception:
+                            addr = arg.strip()
+                    else:
+                        addr = toks[0]
+                if not addr:
+                    gdb.write(f"Usage: {cmd_name} <address> [count]\n")
+                    return
+                try:
+                    gdb.execute(f"x/{count}{fmt} {addr}")
+                except Exception as ex:
+                    gdb.write(f"memory dump failed: {ex}\n")
+
+        # Register under 'sos'
+        _MemCmd(f"sos {cmd_name}")
+        # Optional top-level alias
+        if _top_level_ok(cmd_name):
+            try:
+                _MemCmd(cmd_name)
+            except Exception:
+                pass
+
+    # 'd'/'readmemory' generic fallback -> bytes
+    class _ReadMemory(gdb.Command):
+        __doc__ = "Dumps memory contents (defaults to 64 bytes as hex)."
+        def __init__(self, nm):
+            super(_ReadMemory, self).__init__(nm, gdb.COMMAND_DATA)
+        def invoke(self, arg, from_tty):
+            addr = None
+            count = 64
+            if arg:
+                toks = arg.strip().split()
+                if len(toks) >= 2:
+                    try:
+                        count = int(toks[-1], 0)
+                        addr = ' '.join(toks[:-1])
+                    except Exception:
+                        addr = arg.strip()
+                else:
+                    addr = toks[0]
+            if not addr:
+                gdb.write("Usage: readmemory <address> [count]\n")
+                return
+            try:
+                gdb.execute(f"x/{count}bx {addr}")
+            except Exception as ex:
+                gdb.write(f"readmemory failed: {ex}\n")
+
+    # Register the generic readmemory
+    _ReadMemory("sos readmemory")
+    if _top_level_ok("readmemory"):
+        try:
+            _ReadMemory("readmemory")
+        except Exception:
+            pass
+    # Provide 'sos d' alias only (avoid top-level 'd' that conflicts with gdb shortcuts)
+    try:
+        class _D(gdb.Command):
+            __doc__ = "Alias of 'readmemory'. Dumps memory contents."
+            def __init__(self, nm):
+                super(_D, self).__init__(nm, gdb.COMMAND_DATA)
+            def invoke(self, arg, from_tty):
+                gdb.execute(f"sos readmemory {arg}" if arg else "sos readmemory")
+        _D("sos d")
+    except Exception:
+        pass
+
+    # Specific formats
+    _mk_mem_cmd("db", "bx", 64, "Dumps memory as bytes (hex). Usage: db <address> [count]")
+    _mk_mem_cmd("dd", "wx", 16, "Dumps memory as dwords (uint32). Usage: dd <address> [count]")
+    _mk_mem_cmd("dq", "gx", 8,  "Dumps memory as qwords (uint64). Usage: dq <address> [count]")
+    _mk_mem_cmd("dw", "hx", 32, "Dumps memory as words (uint16). Usage: dw <address> [count]")
+    # chars as printable characters
+    _mk_mem_cmd("dc", "c", 64, "Dumps memory as chars. Usage: dc <address> [count]")
+
+    # Zero-terminated strings
+    class _StringDump(gdb.Command):
+        __doc__ = "Dumps memory as a zero-terminated char string. Usage: du|da <address>"
+        def __init__(self, nm):
+            super(_StringDump, self).__init__(nm, gdb.COMMAND_DATA)
+        def invoke(self, arg, from_tty):
+            addr = (arg or "").strip()
+            if not addr:
+                gdb.write("Usage: du|da <address>\n")
+                return
+            try:
+                gdb.execute(f"x/s {addr}")
+            except Exception as ex:
+                gdb.write(f"string dump failed: {ex}\n")
+
+    for nm in ("du", "da"):
+        try:
+            _StringDump(f"sos {nm}")
+            if _top_level_ok(nm):
+                _StringDump(nm)
+        except Exception:
+            pass
+
+    # Pointers
+    class _PointerDump(gdb.Command):
+        __doc__ = "Dumps memory as pointers. Usage: dp <address> [count]"
+        def __init__(self, nm):
+            super(_PointerDump, self).__init__(nm, gdb.COMMAND_DATA)
+        def invoke(self, arg, from_tty):
+            addr = None
+            count = 8
+            if arg:
+                toks = arg.strip().split()
+                if len(toks) >= 2:
+                    try:
+                        count = int(toks[-1], 0)
+                        addr = ' '.join(toks[:-1])
+                    except Exception:
+                        addr = arg.strip()
+                else:
+                    addr = toks[0]
+            if not addr:
+                gdb.write("Usage: dp <address> [count]\n")
+                return
+            try:
+                # 'a' prints addresses/symbols; better than raw hex for pointers
+                gdb.execute(f"x/{count}a {addr}")
+            except Exception as ex:
+                gdb.write(f"pointer dump failed: {ex}\n")
+    try:
+        _PointerDump("sos dp")
+        if _top_level_ok("dp"):
+            _PointerDump("dp")
+    except Exception:
+        pass
+
+    # Modules (native) --------------------------------------------------------
+    class _Modules(gdb.Command):
+        __doc__ = "Displays the native modules in the process."
+        def __init__(self, nm):
+            super(_Modules, self).__init__(nm, gdb.COMMAND_SUPPORT)
+        def invoke(self, arg, from_tty):
+            try:
+                gdb.write("Native modules (shared libraries):\n")
+                out = gdb.execute("info sharedlibrary", to_string=True)
+                gdb.write(out)
+            except Exception:
+                pass
+            try:
+                gdb.write("\nExecutable and object files:\n")
+                out2 = gdb.execute("info files", to_string=True)
+                gdb.write(out2)
+            except Exception as ex:
+                gdb.write(f"modules info note: {ex}\n")
+    try:
+        _Modules("sos modules")
+        _Modules("sos lm")
+        if _top_level_ok("modules"):
+            _Modules("modules")
+        if _top_level_ok("lm"):
+            _Modules("lm")
+    except Exception:
+        pass
+
+    # Registers ---------------------------------------------------------------
+    class _Registers(gdb.Command):
+        __doc__ = "Displays the thread's registers."
+        def __init__(self, nm):
+            super(_Registers, self).__init__(nm, gdb.COMMAND_SUPPORT)
+        def invoke(self, arg, from_tty):
+            try:
+                gdb.execute("info registers")
+            except Exception as ex:
+                gdb.write(f"registers failed: {ex}\n")
+    try:
+        _Registers("sos registers")
+        if _top_level_ok("registers"):
+            _Registers("registers")
+    except Exception:
+        pass
+
+    # Threads / setthread -----------------------------------------------------
+    class _Threads(gdb.Command):
+        __doc__ = "Lists the threads in the target."
+        def __init__(self, nm):
+            super(_Threads, self).__init__(nm, gdb.COMMAND_SUPPORT)
+        def invoke(self, arg, from_tty):
+            try:
+                gdb.execute("info threads")
+            except Exception as ex:
+                gdb.write(f"threads failed: {ex}\n")
+    try:
+        _Threads("sos threads")
+        if _top_level_ok("threads"):
+            _Threads("threads")
+    except Exception:
+        pass
+
+    class _SetThread(gdb.Command):
+        __doc__ = "Sets the current thread. Usage: setthread <gdb-thread-id>"
+        def __init__(self, nm):
+            super(_SetThread, self).__init__(nm, gdb.COMMAND_SUPPORT)
+        def invoke(self, arg, from_tty):
+            tid = (arg or "").strip()
+            if not tid:
+                gdb.write("Usage: setthread <gdb-thread-id>\n")
+                return
+            try:
+                gdb.execute(f"thread {tid}")
+            except Exception as ex:
+                gdb.write(f"setthread failed: {ex}\n")
+    try:
+        _SetThread("sos setthread")
+        if _top_level_ok("setthread"):
+            _SetThread("setthread")
+    except Exception:
+        pass
+
+    # runtimes / setruntime ---------------------------------------------------
+    class _SetRuntime(gdb.Command):
+        __doc__ = "Changes the default runtime. Usage: setruntime <id> (see 'sos runtimes')"
+        def __init__(self, nm):
+            super(_SetRuntime, self).__init__(nm, gdb.COMMAND_SUPPORT)
+        def invoke(self, arg, from_tty):
+            rid = (arg or "").strip()
+            if not rid:
+                gdb.write("Usage: setruntime <id>\n")
+                return
+            # Try managed dispatcher: 'runtimes -set <id>' if supported
+            try:
+                gdb.execute(f"sos exec runtimes -set {rid}")
+                return
+            except Exception:
+                pass
+            # Fallback: call directly if export exists or just show runtimes
+            try:
+                gdb.execute("sos runtimes")
+            except Exception as ex:
+                gdb.write(f"setruntime fallback failed: {ex}\n")
+    try:
+        _SetRuntime("sos setruntime")
+        if _top_level_ok("setruntime"):
+            _SetRuntime("setruntime")
+    except Exception:
+        pass
+
+    # Logging (console file) --------------------------------------------------
+    class _LogOpen(gdb.Command):
+        __doc__ = "Enables console file logging. Usage: logopen <path>"
+        def __init__(self, nm):
+            super(_LogOpen, self).__init__(nm, gdb.COMMAND_SUPPORT)
+        def invoke(self, arg, from_tty):
+            path = (arg or "").strip()
+            if not path:
+                gdb.write("Usage: logopen <path>\n")
+                return
+            try:
+                gdb.execute(f"set logging file {path}")
+                gdb.execute("set logging overwrite on")
+                gdb.execute("set logging on")
+                gdb.write(f"Console logging enabled to '{path}'.\n")
+            except Exception as ex:
+                gdb.write(f"logopen failed: {ex}\n")
+    try:
+        _LogOpen("sos logopen")
+        if _top_level_ok("logopen"):
+            _LogOpen("logopen")
+    except Exception:
+        pass
+
+    class _LogClose(gdb.Command):
+        __doc__ = "Disables console file logging. Usage: logclose"
+        def __init__(self, nm):
+            super(_LogClose, self).__init__(nm, gdb.COMMAND_SUPPORT)
+        def invoke(self, arg, from_tty):
+            try:
+                gdb.execute("set logging off")
+                gdb.write("Console logging disabled.\n")
+            except Exception as ex:
+                gdb.write(f"logclose failed: {ex}\n")
+    try:
+        _LogClose("sos logclose")
+        if _top_level_ok("logclose"):
+            _LogClose("logclose")
+    except Exception:
+        pass
+
+    # SetSymbolServer (capitalized alias) ------------------------------------
+    class _SetSymbolServerAlias(gdb.Command):
+        __doc__ = "Alias to setsymbolserver. Usage: SetSymbolServer <url>"
+        def __init__(self, nm):
+            super(_SetSymbolServerAlias, self).__init__(nm, gdb.COMMAND_SUPPORT)
+        def invoke(self, arg, from_tty):
+            try:
+                gdb.execute(f"sos setsymbolserver {arg}" if arg else "sos setsymbolserver")
+            except Exception as ex:
+                gdb.write(f"SetSymbolServer failed: {ex}\n")
+    try:
+        _SetSymbolServerAlias("sos SetSymbolServer")
+        if _top_level_ok("SetSymbolServer"):
+            _SetSymbolServerAlias("SetSymbolServer")
+    except Exception:
+        pass
+
+
+_register_wrapper_commands()
