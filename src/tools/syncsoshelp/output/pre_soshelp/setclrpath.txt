@@ -1,0 +1,15 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp setclrpath
+Description:
+  Sets the path to load coreclr DAC/DBI files.
+
+Usage:
+  > setclrpath [<path>] [options]
+
+Arguments:
+  <path>  Runtime directory path.
+
+Options:
+  -c, --clear  Clears the runtime directory path.
+
+(lldb) quit

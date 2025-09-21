@@ -1,0 +1,91 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 34048 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 34048 resuming
+Process 34048 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp name2ee
+Description:
+  Displays the MethodTable structure and EEClass structure for the specified 
+  type or method in the specified module.
+
+Usage:
+  > name2ee [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+Name2EE <module name> <type or method name>
+Name2EE <module name>!<type or method name>
+
+This function allows you to turn a class name into a MethodTable and EEClass. 
+It turns a method name into a MethodDesc. Here is an example for a method:
+
+    (lldb) name2ee unittest.exe MainClass.Main
+    Module: 001caa38
+    Token: 0x0600000d
+    MethodDesc: 00902f40
+    Name: MainClass.Main()
+    JITTED Code Address: 03ef00b8
+
+and for a class:
+
+    (lldb) name2ee unittest!MainClass
+    Module: 001caa38
+    Token: 0x02000005
+    MethodTable: 009032d8
+    EEClass: 03ee1424
+    Name: MainClass
+
+The module you are "browsing" with Name2EE needs to be loaded in the process. 
+To get a type name exactly right, first browse the module with ILDASM. You
+can also pass * as the <module name> to search all loaded managed modules.
+<module name> can also be the debugger's name for a module, such as
+mscorlib or image00400000.
+
+The <module>!<type> syntax is also supported. You can use an asterisk on the 
+left of the !, but the type on the right side needs to be fully qualified.
+
+If you are looking for a way to display a static field of a class (and you
+don't have an instance of the class, so dumpobj won't help you), note that
+once you have the EEClass, you can run DumpClass, which will display the
+value of all static fields.
+
+There is yet one more way to specify a module name. In the case of modules
+loaded from an assembly store (such as a SQL db) rather than disk, the
+module name will look like this:
+
+price, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null
+
+For this kind of module, simply use price as the module name:
+
+    0:044> name2ee price Price
+    Module: 10f028b0 (price, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null)
+    Token: 0x02000002
+    MethodTable: 11a47ae0
+    EEClass: 11a538c8
+    Name: Price
+
+Where are we getting these module names from? Run DumpDomain to see a list of
+all loaded modules in all domains. And remember that you can browse all the
+types in a module with DumpModule -mt <module pointer>.
+(lldb) quit

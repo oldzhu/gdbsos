@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help ehinfo
+Displays the exception handling blocks in a JIT-ed method.
+
+Syntax: ehinfo
+(lldb) quit

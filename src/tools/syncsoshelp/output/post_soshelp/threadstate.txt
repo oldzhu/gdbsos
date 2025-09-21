@@ -1,0 +1,95 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 40547 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 40547 resuming
+Process 40547 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp threadstate
+Description:
+  Pretty prints the meaning of a threads state.
+
+Usage:
+  > threadstate [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+ThreadState value
+
+The clrthreads command outputs, among other things, the state of the thread.
+This is a bit field which corresponds to various states the thread is in.
+To check the state of the thread, simply pass that bit field from the
+output of clrthreads into ThreadState.
+
+Example:
+    (lldb) clrthreads
+    ThreadCount:      2
+    UnstartedThread:  0
+    BackgroundThread: 1
+    PendingThread:    0
+    DeadThread:       0
+    Hosted Runtime:   no
+                                          PreEmptive   GC Alloc           Lock
+           ID OSID ThreadOBJ    State     GC       Context       Domain   Count APT Exception
+       0    1  250 0019b068      a020 Disabled 02349668:02349fe8 0015def0     0 MTA
+       2    2  944 001a6020      b220 Enabled  00000000:00000000 0015def0     0 MTA (Finalizer)
+    0:003> sos ThreadState b220
+        Legal to Join
+        Background
+        CLR Owns
+        CoInitialized
+        In Multi Threaded Apartment
+
+Possible thread states:
+    Thread Abort Requested
+    GC Suspend Pending
+    User Suspend Pending
+    Debug Suspend Pending
+    GC On Transitions
+    Legal to Join
+    Yield Requested
+    Hijacked by the GC
+    Blocking GC for Stack Overflow
+    Background
+    Unstarted
+    Dead
+    CLR Owns
+    CoInitialized
+    In Single Threaded Apartment
+    In Multi Threaded Apartment
+    Reported Dead
+    Fully initialized
+    Task Reset
+    Sync Suspended
+    Debug Will Sync
+    Stack Crawl Needed
+    Suspend Unstarted
+    Aborted
+    Thread Pool Worker Thread
+    Interruptible
+    Interrupted
+    Completion Port Thread
+    Abort Initiated
+    Finalized
+    Failed to Start
+    Detached
+(lldb) quit

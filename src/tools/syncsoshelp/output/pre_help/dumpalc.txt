@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dumpalc
+Displays details about a collectible AssemblyLoadContext to which the specified
+object is loaded.
+
+Syntax: dumpalc
+(lldb) quit

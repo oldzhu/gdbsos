@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help printexception
+Displays and formats fields of any object derived from the Exception class at
+the specified address.
+
+Syntax: printexception
+(lldb) quit

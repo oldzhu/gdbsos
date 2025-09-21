@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help clru
+Displays an annotated disassembly of a managed method.
+
+Syntax: clru
+(lldb) quit

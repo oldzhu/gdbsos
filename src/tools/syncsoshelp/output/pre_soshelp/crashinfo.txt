@@ -1,0 +1,3 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp crashinfo
+Index was outside the bounds of the array.

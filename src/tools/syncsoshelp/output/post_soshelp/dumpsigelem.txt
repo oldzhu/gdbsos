@@ -1,0 +1,81 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 25336 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 25336 resuming
+Process 25336 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp dumpsigelem
+Description:
+  Dumps a single element of a signature object.
+
+Usage:
+  > dumpsigelem [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+DumpSigElem <sigaddr> <moduleaddr>
+
+This command dumps a single element of a signature object.  For most circumstances,
+you should use DumpSig to look at individual signature objects, but if you find a 
+signature that has been corrupted in some manner you can use DumpSigElem to read out 
+the valid portions of it.
+
+If we look at a valid signature object for a method we see the following:
+    0:000> dumpsig 0x000007fe`ec20879d 0x000007fe`eabd1000
+    [DEFAULT] [hasThis] Void (Boolean,String,String)
+
+We can look at the individual elements of this object by adding the offsets into the 
+object which correspond to the return value and parameters:
+    0:000> sos DumpSigElem 0x000007fe`ec20879d+2 0x000007fe`eabd1000
+    Void
+    0:000> sos DumpSigElem 0x000007fe`ec20879d+3 0x000007fe`eabd1000
+    Boolean
+    0:000> sos DumpSigElem 0x000007fe`ec20879d+4 0x000007fe`eabd1000
+    String
+    0:000> sos DumpSigElem 0x000007fe`ec20879d+5 0x000007fe`eabd1000
+    String
+
+We can do something similar for fields.  Here is the full signature of a field:
+    0:000> dumpsig 0x000007fe`eb7fd8cd 0x000007fe`eabd1000
+    [FIELD] ValueClass System.RuntimeTypeHandle 
+
+Using DumpSigElem we can find the type of the field by adding the offset of it (1) to 
+the address of the signature:
+    0:000> sos DumpSigElem 0x000007fe`eb7fd8cd+1 0x000007fe`eabd1000
+    ValueClass System.RuntimeTypeHandle
+
+DumpSigElem will also work with generics.  Let a function be defined as follows:
+    public A Test(IEnumerable<B> n)
+
+The elements of this signature can be obtained by adding offsets into the signature
+when calling DumpSigElem:
+
+    0:000> sos DumpSigElem 00000000`00bc2437+2 000007ff00043178 
+    __Canon
+    0:000> sos DumpSigElem 00000000`00bc2437+4 000007ff00043178 
+    Class System.Collections.Generic.IEnumerable`1<__Canon>
+
+The actual offsets that you should add are determined by the contents of the
+signature itself.  By trial and error you should be able to find various elements
+of the signature.
+(lldb) quit

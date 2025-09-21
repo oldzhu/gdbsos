@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help ip2md
+Displays the MethodDesc structure at the specified address in code that has
+been JIT-compiled.
+
+Syntax: ip2md
+(lldb) quit

@@ -1,0 +1,37 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 13920 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 13920 resuming
+Process 13920 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp assemblies
+Description:
+  Lists the managed assemblies in the process.
+
+Usage:
+  > assemblies [options]
+
+Options:
+  -n, --name     RegEx filter on assembly name (path not included).
+  -v, --verbose  Displays detailed information about the assemblies.
+
+(lldb) quit

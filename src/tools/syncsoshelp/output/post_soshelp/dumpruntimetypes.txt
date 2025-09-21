@@ -1,0 +1,65 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 24885 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 24885 resuming
+Process 24885 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp dumpruntimetypes
+Description:
+  Finds all System.RuntimeType objects in the GC heap and prints the type name 
+  and MethodTable they refer to.
+
+Usage:
+  > dumpruntimetypes
+
+DumpRuntimeTypes finds all System.RuntimeType objects in the gc heap and 
+prints the type name and MethodTable they refer too. Sample output:
+
+     Address   Domain       MT Type Name
+    ------------------------------------------------------------------------------
+      a515f4   14a740 5baf8d28 System.TypedReference
+      a51608   14a740 5bb05764 System.Globalization.BaseInfoTable
+      a51958   14a740 5bb05b24 System.Globalization.CultureInfo
+      a51a44   14a740 5bb06298 System.Globalization.GlobalizationAssembly
+      a51de0   14a740 5bb069c8 System.Globalization.TextInfo
+      a56b98   14a740 5bb12d28 System.Security.Permissions.HostProtectionResource
+      a56bbc   14a740 5baf7248 System.Int32
+      a56bd0   14a740 5baf3fdc System.String
+      a56cfc   14a740 5baf36a4 System.ValueType
+    ...
+
+This command will print a "?" in the domain column if the type is loaded into multiple
+AppDomains.  For example:
+
+    (lldb) dumpruntimetypes
+     Address   Domain       MT Type Name              
+    ------------------------------------------------------------------------------
+     28435a0        ?   3f6a8c System.TypedReference
+     28435b4        ?   214d6c System.ValueType
+     28435c8        ?   216314 System.Enum
+     28435dc        ?   2147cc System.Object
+     284365c        ?   3cd57c System.IntPtr
+     2843670        ?   3feaac System.Byte
+     2843684        ?  23a544c System.IEquatable`1[[System.IntPtr, mscorlib]]
+     2843784        ?   3c999c System.Int32
+     2843798        ?   3caa04 System.IEquatable`1[[System.Int32, mscorlib]]
+(lldb) quit

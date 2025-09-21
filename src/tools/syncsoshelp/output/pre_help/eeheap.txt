@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help eeheap
+Displays info about process memory consumed by internal runtime data structures.
+
+Syntax: eeheap
+(lldb) quit

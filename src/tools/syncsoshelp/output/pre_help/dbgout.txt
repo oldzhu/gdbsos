@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dbgout
+Enables/disables (-off) internal SOS logging.
+
+Syntax: dbgout
+(lldb) quit

@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dumpassembly
+Displays details about an assembly.
+
+Syntax: dumpassembly
+(lldb) quit

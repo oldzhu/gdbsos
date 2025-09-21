@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help pathto
+Displays the GC path from <root> to <target>.
+
+Syntax: pathto
+(lldb) quit

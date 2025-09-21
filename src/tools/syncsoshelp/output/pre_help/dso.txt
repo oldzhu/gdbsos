@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dso
+Displays all managed objects found within the bounds of the current stack.
+
+Syntax: dso
+(lldb) quit

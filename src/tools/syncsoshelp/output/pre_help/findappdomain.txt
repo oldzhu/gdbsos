@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help findappdomain
+Attempts to resolve the AppDomain of a GC object.
+
+Syntax: findappdomain
+(lldb) quit

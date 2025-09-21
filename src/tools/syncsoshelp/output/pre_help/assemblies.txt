@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help assemblies
+Lists the managed modules in the process.
+
+Syntax: assemblies
+(lldb) quit

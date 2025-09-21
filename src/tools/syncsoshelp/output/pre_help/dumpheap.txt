@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dumpheap
+Displays info about the garbage-collected heap and collection statistics about
+objects.
+
+Syntax: dumpheap
+(lldb) quit

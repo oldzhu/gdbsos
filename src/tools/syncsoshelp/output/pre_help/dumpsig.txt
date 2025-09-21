@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dumpsig
+Dumps the signature of a method or field specified by '<sigaddr> <moduleaddr>'.
+
+Syntax: dumpsig
+(lldb) quit

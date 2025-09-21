@@ -1,0 +1,8 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help histobj
+Examines all stress log relocation records and displays the chain of garbage
+collection relocations that may have led to the address passed in as an
+argument.
+
+Syntax: histobj
+(lldb) quit

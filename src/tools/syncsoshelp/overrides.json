@@ -1,0 +1,28 @@
+{
+  "commands": [
+    { "name": "readmemory", "origin": "gdb-wrapper", "help": "Dumps memory contents.", "gdb": { "wrapper": { "type": "memory", "fmt": "bx", "defaultCount": 64 }, "topLevelSafe": true }, "staticList": true, "staticOrder": 1, "aliases": ["d"] },
+    { "name": "da", "origin": "gdb-wrapper", "help": "Dumps memory as zero-terminated byte strings.", "gdb": { "wrapper": { "type": "memory", "fmt": "s" }, "topLevelSafe": true }, "staticList": true },
+    { "name": "db", "origin": "gdb-wrapper", "help": "Dumps memory as bytes.", "gdb": { "wrapper": { "type": "memory", "fmt": "bx", "defaultCount": 64 }, "topLevelSafe": true }, "staticList": true },
+    { "name": "dc", "origin": "gdb-wrapper", "help": "Dumps memory as chars.", "gdb": { "wrapper": { "type": "memory", "fmt": "c", "defaultCount": 64 }, "topLevelSafe": true }, "staticList": true },
+    { "name": "dd", "origin": "gdb-wrapper", "help": "Dumps memory as dwords (uint).", "gdb": { "wrapper": { "type": "memory", "fmt": "wx", "defaultCount": 16 }, "topLevelSafe": true }, "staticList": true },
+    { "name": "dp", "origin": "gdb-wrapper", "help": "Dumps memory as pointers.", "gdb": { "wrapper": { "type": "memory", "fmt": "a", "defaultCount": 8 }, "topLevelSafe": true }, "staticList": true },
+    { "name": "dq", "origin": "gdb-wrapper", "help": "Dumps memory as qwords (ulong).", "gdb": { "wrapper": { "type": "memory", "fmt": "gx", "defaultCount": 8 }, "topLevelSafe": true }, "staticList": true },
+    { "name": "du", "origin": "gdb-wrapper", "help": "Dumps memory as zero-terminated char strings.", "gdb": { "wrapper": { "type": "memory", "fmt": "s" }, "topLevelSafe": true }, "staticList": true },
+    { "name": "dw", "origin": "gdb-wrapper", "help": "Dumps memory as words (ushort).", "gdb": { "wrapper": { "type": "memory", "fmt": "hx", "defaultCount": 32 }, "topLevelSafe": true }, "staticList": true },
+
+    { "name": "modules", "origin": "gdb-wrapper", "help": "Displays the native modules in the process.", "aliases": ["lm"], "gdb": { "wrapper": { "type": "delegate", "command": "info sharedlibrary" }, "topLevelSafe": true }, "staticList": true },
+    { "name": "registers", "origin": "gdb-wrapper", "help": "Displays the thread's registers.", "aliases": ["r"], "gdb": { "wrapper": { "type": "delegate", "command": "info registers" }, "topLevelSafe": true }, "staticList": true },
+    { "name": "threads", "origin": "gdb-wrapper", "help": "Lists the threads in the target.", "gdb": { "wrapper": { "type": "delegate", "command": "info threads" }, "topLevelSafe": true }, "staticList": true },
+    { "name": "setthread", "origin": "gdb-wrapper", "help": "Sets the current thread.", "gdb": { "wrapper": { "type": "delegate", "command": "thread <id>" }, "topLevelSafe": true }, "staticList": true },
+
+    { "name": "logopen", "origin": "gdb-wrapper", "help": "Enables console file logging.", "gdb": { "wrapper": { "type": "delegate", "command": "set logging on" }, "topLevelSafe": true }, "staticList": true },
+    { "name": "logclose", "origin": "gdb-wrapper", "help": "Disables console file logging.", "gdb": { "wrapper": { "type": "delegate", "command": "set logging off" }, "topLevelSafe": true }, "staticList": true },
+
+    { "name": "setruntime", "origin": "gdb-wrapper", "help": "Changes the default runtime.", "gdb": { "wrapper": { "type": "delegate", "command": "sos exec runtimes -set <id>" }, "topLevelSafe": true }, "staticList": true },
+    { "name": "SetSymbolServer", "origin": "gdb-wrapper", "help": "Alias to setsymbolserver.", "gdb": { "wrapper": { "type": "delegate", "command": "sos setsymbolserver" }, "topLevelSafe": true }, "staticList": true }
+  ],
+  "aliasSafety": {
+    "d": false,
+    "r": false
+  }
+}

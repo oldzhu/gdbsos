@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help histinit
+Initializes the SOS structures from the stress log saved in the debuggee.
+
+Syntax: histinit
+(lldb) quit

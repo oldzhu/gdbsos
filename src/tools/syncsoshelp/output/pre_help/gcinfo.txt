@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help gcinfo
+Displays info JIT GC encoding for a method.
+
+Syntax: gcinfo
+(lldb) quit

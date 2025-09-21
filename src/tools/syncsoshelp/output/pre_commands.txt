@@ -1,0 +1,7 @@
+settings set target.disable-aslr true
+settings set auto-confirm true
+plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+soshelp
+help
+# Commands discovered in soshelp will be expanded by parse step; pre-capture the top-level only.
+quit

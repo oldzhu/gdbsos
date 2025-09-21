@@ -1,0 +1,9 @@
+settings set target.disable-aslr true
+settings set auto-confirm true
+plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+process launch --stop-at-entry
+br set -r coreclr_execute_assembly
+continue
+soshelp
+quit

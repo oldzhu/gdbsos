@@ -1,0 +1,17 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp setthread
+Description:
+  Lists the threads in the target or sets the current thread.
+
+Usage:
+  > threads [<thread>] [options]
+
+Arguments:
+  <thread>  The thread index or id to set, otherwise displays the list of 
+            threads.
+
+Options:
+  -t, --tid      <thread> is an OS thread id.
+  -v, --verbose  Displays more details.
+
+(lldb) quit

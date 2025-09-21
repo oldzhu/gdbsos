@@ -1,0 +1,265 @@
+{
+  "commands": [
+    {
+      "aliases": [],
+      "help": "Displays the crash details that created the dump.",
+      "name": "crashinfo",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 0
+    },
+    {
+      "aliases": [
+        "readmemory"
+      ],
+      "help": "Dumps memory contents.",
+      "name": "d",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 1
+    },
+    {
+      "aliases": [
+        "d"
+      ],
+      "help": "Dumps memory contents.",
+      "name": "readmemory",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 1
+    },
+    {
+      "aliases": [],
+      "help": "Dumps memory as zero-terminated byte strings.",
+      "name": "da",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 2
+    },
+    {
+      "aliases": [],
+      "help": "Dumps memory as bytes.",
+      "name": "db",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 3
+    },
+    {
+      "aliases": [],
+      "help": "Dumps memory as chars.",
+      "name": "dc",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 4
+    },
+    {
+      "aliases": [],
+      "help": "Dumps memory as dwords (uint).",
+      "name": "dd",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 5
+    },
+    {
+      "aliases": [],
+      "help": "Dumps memory as pointers.",
+      "name": "dp",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 6
+    },
+    {
+      "aliases": [],
+      "help": "Dumps memory as qwords (ulong).",
+      "name": "dq",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 7
+    },
+    {
+      "aliases": [],
+      "help": "Dumps memory as zero-terminated char strings.",
+      "name": "du",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 8
+    },
+    {
+      "aliases": [],
+      "help": "Dumps memory as words (ushort).",
+      "name": "dw",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 9
+    },
+    {
+      "aliases": [
+        "soshelp"
+      ],
+      "help": "Displays help for a command.",
+      "name": "help",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 10
+    },
+    {
+      "aliases": [
+        "help"
+      ],
+      "help": "Displays help for a command.",
+      "name": "soshelp",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 10
+    },
+    {
+      "aliases": [],
+      "help": "Loads symbols for all modules.",
+      "name": "loadsymbols",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 11
+    },
+    {
+      "aliases": [],
+      "help": "Disables console file logging.",
+      "name": "logclose",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 12
+    },
+    {
+      "aliases": [],
+      "help": "Enables/disables internal diagnostic logging.",
+      "name": "logging",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 13
+    },
+    {
+      "aliases": [],
+      "help": "Enables console file logging.",
+      "name": "logopen",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 14
+    },
+    {
+      "aliases": [
+        "lm"
+      ],
+      "help": "Displays the native modules in the process.",
+      "name": "modules",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 15
+    },
+    {
+      "aliases": [
+        "modules"
+      ],
+      "help": "Displays the native modules in the process.",
+      "name": "lm",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 15
+    },
+    {
+      "aliases": [
+        "r"
+      ],
+      "help": "Displays the thread's registers.",
+      "name": "registers",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 16
+    },
+    {
+      "aliases": [
+        "registers"
+      ],
+      "help": "Displays the thread's registers.",
+      "name": "r",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 16
+    },
+    {
+      "aliases": [
+        "setruntime"
+      ],
+      "help": "Lists the runtimes in the target or changes the default runtime.",
+      "name": "runtimes",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 17
+    },
+    {
+      "aliases": [
+        "runtimes"
+      ],
+      "help": "Lists the runtimes in the target or changes the default runtime.",
+      "name": "setruntime",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 17
+    },
+    {
+      "aliases": [],
+      "help": "Sets the path to load coreclr DAC/DBI files.",
+      "name": "setclrpath",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 18
+    },
+    {
+      "aliases": [],
+      "help": "Enables and sets symbol server support for symbols and module download.",
+      "name": "setsymbolserver",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 19
+    },
+    {
+      "aliases": [],
+      "help": "Resets the internal cached state.",
+      "name": "sosflush",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 20
+    },
+    {
+      "aliases": [],
+      "help": "Displays internal status.",
+      "name": "sosstatus",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 21
+    },
+    {
+      "aliases": [
+        "setthread"
+      ],
+      "help": "Lists the threads in the target or sets the current thread.",
+      "name": "threads",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 22
+    },
+    {
+      "aliases": [
+        "threads"
+      ],
+      "help": "Lists the threads in the target or sets the current thread.",
+      "name": "setthread",
+      "origin": "lldb",
+      "staticList": true,
+      "staticOrder": 22
+    }
+  ],
+  "meta": {
+    "postRunCaptured": true,
+    "preRunCaptured": true
+  },
+  "source": "lldb-capture"
+}

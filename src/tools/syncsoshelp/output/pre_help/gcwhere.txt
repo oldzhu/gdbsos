@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help gcwhere
+Displays the location in the GC heap of the specified address.
+
+Syntax: gcwhere
+(lldb) quit

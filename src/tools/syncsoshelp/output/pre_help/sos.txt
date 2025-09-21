@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help sos
+Executes various coreclr debugging commands. Use the syntax 'sos <command -
+name> <args>'. For more information, see 'soshelp'.
+
+Syntax: sos
+(lldb) quit

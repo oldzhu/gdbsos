@@ -1,0 +1,97 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 14419 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 14419 resuming
+Process 14419 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp clrstack
+Description:
+  Provides a stack trace of managed code only.
+
+Usage:
+  > clrstack [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+ClrStack [-a] [-l] [-p] [-n] [-f] [-r] [-all]
+ClrStack [-a] [-l] [-p] [-i] [variable name] [frame]
+
+ClrStack attempts to provide a true stack trace for managed code only. It is
+handy for clean, simple traces when debugging straightforward managed 
+programs. The -p parameter will show arguments to the managed function. The 
+-l parameter can be used to show information on local variables in a frame.
+SOS can't retrieve local names at this time, so the output for locals is in
+the format <local address> = <value>. The -a (all) parameter is a short-cut
+for -l and -p combined. 
+
+The -f option (full mode) displays the native frames intermixing them with
+the managed frames and the assembly name and function offset for the managed
+frames.
+
+The -r option dumps the registers for each stack frame.
+
+The -all option dumps all the managed threads' stacks.
+
+If the debugger has the option SYMOPT_LOAD_LINES specified (either by the
+.lines or .symopt commands), SOS will look up the symbols for every managed 
+frame and if successful will display the corresponding source file name and 
+line number. The -n (No line numbers) parameter can be specified to disable 
+this behavior.
+
+When you see methods with the name "[Frame:...", that indicates a transition 
+between managed and unmanaged code. You could run IP2MD on the return 
+addresses in the call stack to get more information on each managed method.
+
+On x64 platforms, Transition Frames are not displayed at this time. To avoid
+heavy optimization of parameters and locals one can request the JIT compiler
+to not optimize functions in the managed app by creating a file myapp.ini 
+(if your program is myapp.exe) in the same directory. Put the following lines
+in myapp.ini and re-run:
+
+[.NET Framework Debugging Control]
+GenerateTrackingInfo=1
+AllowOptimize=0
+
+The -i option is a new EXPERIMENTAL addition to ClrStack and will use the ICorDebug
+interfaces to display the managed stack and variables. With this option you can also 
+view and expand arrays and fields for managed variables. If a stack frame number is 
+specified in the command line, ClrStack will show you the parameters and/or locals 
+only for that frame (provided you specify -l or -p or -a of course). If a variable 
+name and a stack frame number are specified in the command line, ClrStack will show 
+you the parameters and/or locals for that frame, and will also show you the fields 
+for that variable name you specified. Here are some examples: 
+   clrstack -i -a           : This will show you all parameters and locals for all frames
+   clrstack -i -a 3         : This will show you all parameters and locals, for frame 3
+   clrstack -i var1 0       : This will show you the fields of 'var1' for frame 0
+   clrstack -i var1.abc 2   : This will show you the fields of 'var1', and expand
+                              'var1.abc' to show you the fields of the 'abc' field,
+                              for frame 2.
+   clrstack -i var1.[basetype] 0   : This will show you the fields of 'var1', and
+                                     expand the base type of 'var1' to show you its
+                                     fields.
+   clrstack -i var1.[6] 0   : If 'var1' is an array, this will show you the element
+                              at index 6 in the array, along with its fields
+The -i options uses DML output for a better debugging experience, so typically you
+should only need to execute "clrstack -i", and from there, click on the DML 
+hyperlinks to inspect the different managed stack frames and managed variables.                             
+(lldb) quit

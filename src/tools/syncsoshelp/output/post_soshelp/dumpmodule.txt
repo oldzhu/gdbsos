@@ -1,0 +1,93 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 23509 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 23509 resuming
+Process 23509 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp dumpmodule
+Description:
+  Displays information about a EE module structure at the specified address.
+
+Usage:
+  > dumpmodule [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+DumpModule [-mt] <Module address>
+
+You can get a Module address from DumpDomain, DumpAssembly and other 
+functions. Here is sample output:
+
+    (lldb) sos DumpModule 1caa50
+    Name: /home/user/pub/unittest
+    Attributes: PEFile
+    Assembly: 001ca248
+    LoaderHeap: 001cab3c
+    TypeDefToMethodTableMap: 03ec0010
+    TypeRefToMethodTableMap: 03ec0024
+    MethodDefToDescMap: 03ec0064
+    FieldDefToDescMap: 03ec00a4
+    MemberRefToDescMap: 03ec00e8
+    FileReferencesMap: 03ec0128
+    AssemblyReferencesMap: 03ec012c
+    MetaData start address: 00402230 (1888 bytes)
+
+The Maps listed map metadata tokens to CLR data structures. Without going into 
+too much detail, you can examine memory at those addresses to find the 
+appropriate structures. For example, the TypeDefToMethodTableMap above can be 
+examined:
+
+    (lldb) dd 3ec0010
+    03ec0010  00000000 00000000 0090320c 0090375c
+    03ec0020  009038ec ...
+
+This means TypeDef token 2 maps to a MethodTable with the value 0090320c. You 
+can run DumpMT to verify that. The MethodDefToDescMap takes a MethodDef token 
+and maps it to a MethodDesc, which can be passed to dumpmd.
+
+There is a new option "-mt", which will display the types defined in a module,
+and the types referenced by the module. For example:
+
+    (lldb) sos DumpModule -mt 1aa580
+    Name: /home/user/pub/unittest
+    ...<etc>...
+    MetaData start address: 0040220c (1696 bytes)
+
+    Types defined in this module
+
+          MT    TypeDef Name
+    --------------------------------------------------------------------------
+    030d115c 0x02000002 Funny
+    030d1228 0x02000003 Mainy
+
+    Types referenced in this module
+
+          MT    TypeRef Name
+    --------------------------------------------------------------------------
+    030b6420 0x01000001 System.ValueType
+    030b5cb0 0x01000002 System.Object
+    030fceb4 0x01000003 System.Exception
+    0334e374 0x0100000c System.Console
+    03167a50 0x0100000e System.Runtime.InteropServices.GCHandle
+    0336a048 0x0100000f System.GC
+(lldb) quit

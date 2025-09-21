@@ -1,0 +1,12 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp sosstatus
+Description:
+  Displays internal status.
+
+Usage:
+  > sosstatus [options]
+
+Options:
+  -reset  Resets the internal cached state.
+
+(lldb) quit

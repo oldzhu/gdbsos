@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help gcroot
+Displays info about references (or roots) to an object at the specified address.
+
+Syntax: gcroot
+(lldb) quit

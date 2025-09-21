@@ -1,0 +1,101 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 29107 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 29107 resuming
+Process 29107 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp gcinfo
+Description:
+  Displays JIT GC encoding for a method.
+
+Usage:
+  > gcinfo [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+GCInfo (<MethodDesc address> | <Code address>)
+
+GCInfo is especially useful for CLR Devs who are trying to determine if there 
+is a bug in the JIT Compiler. It parses the GCEncoding for a method, which is a
+compressed stream of data indicating when registers or stack locations contain 
+managed objects. It is important to keep track of this information, because if 
+a garbage collection occurs, the collector needs to know where roots are so it 
+can update them with new object pointer values.
+
+Here is sample output where you can see the change in register state. Normally 
+you would print this output out and read it alongside a disassembly of the 
+method. For example, the notation "reg EDI becoming live" at offset 0x11 of the
+method might correspond to a "mov edi,ecx" statement.
+
+    (lldb) sos GCInfo 5b68dbb8   (5b68dbb8 is the start of a JITTED method)
+    entry point 5b68dbb8
+    preJIT generated code
+    GC info 5b9f2f09
+    Method info block:
+        method      size   = 0036
+        prolog      size   =  19
+        epilog      size   =   8
+        epilog     count   =   1
+        epilog      end    = yes
+        saved reg.  mask   = 000B
+        ebp frame          = yes
+        fully interruptible=yes
+        double align       = no
+        security check     = no
+        exception handlers = no
+        local alloc        = no
+        edit & continue    = no
+        varargs            = no
+        argument   count   =   4
+        stack frame size   =   1
+        untracked count    =   5
+        var ptr tab count  =   0
+        epilog        at   002E
+    36 D4 8C C7 AA |
+    93 F3 40 05    |
+
+    Pointer table:
+    14             |             [EBP+14H] an untracked  local
+    10             |             [EBP+10H] an untracked  local
+    0C             |             [EBP+0CH] an untracked  local
+    08             |             [EBP+08H] an untracked  local
+    44             |             [EBP-04H] an untracked  local
+    F1 79          | 0011        reg EDI becoming live
+    72             | 0013        reg ESI becoming live
+    83             | 0016        push ptr  0
+    8B             | 0019        push ptr  1
+    93             | 001C        push ptr  2
+    9B             | 001F        push ptr  3
+    56             | 0025        reg EDX becoming live
+    4A             | 0027        reg ECX becoming live
+    0E             | 002D        reg ECX becoming dead
+    10             | 002D        reg EDX becoming dead
+    E0             | 002D        pop  4 ptrs
+    F0 31          | 0036        reg ESI becoming dead
+    38             | 0036        reg EDI becoming dead
+    FF             |
+
+This function is important for CLR Devs, but very difficult for anyone else to 
+make sense of it. You would usually come to use it if you suspect a gc heap 
+corruption bug caused by invalid GCEncoding for a particular method.
+(lldb) quit

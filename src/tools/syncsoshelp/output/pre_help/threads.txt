@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help threads
+Pretty prints the meaning of a threads state.
+
+Syntax: threadstate
+(lldb) quit

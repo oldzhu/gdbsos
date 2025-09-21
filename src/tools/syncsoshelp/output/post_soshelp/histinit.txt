@@ -1,0 +1,63 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 30486 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 30486 resuming
+Process 30486 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp histinit
+Description:
+  Initializes the SOS structures from the stress log saved in the debuggee.
+
+Usage:
+  > histinit [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+HistInit
+
+Before running any of the Hist - family commands you need to initialize the SOS 
+structures from the stress log saved in the debuggee.  This is achieved by the 
+HistInit command.
+
+Sample output:
+
+    (lldb) histinit
+    Attempting to read Stress log
+    STRESS LOG:
+        facilitiesToLog  = 0xffffffff
+        levelToLog       = 6
+        MaxLogSizePerThread = 0x10000 (65536)
+        MaxTotalLogSize = 0x1000000 (16777216)
+        CurrentTotalLogChunk = 9
+        ThreadsWithLogs  = 3
+        Clock frequency  = 3.392 GHz
+        Start time         15:26:31
+        Last message time  15:26:56
+        Total elapsed time 25.077 sec
+    .....................................
+    ---------------------------- 2407 total entries -----------------------------
+
+
+    SUCCESS: GCHist structures initialized
+
+(lldb) quit

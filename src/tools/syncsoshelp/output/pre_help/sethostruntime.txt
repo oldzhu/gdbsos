@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help sethostruntime
+Sets the path to the .NET Core runtime to use to host the managed code that
+runs as part of SOS
+
+Syntax: sethostruntime
+(lldb) quit

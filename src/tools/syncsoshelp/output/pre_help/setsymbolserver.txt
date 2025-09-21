@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help setsymbolserver
+Enables the symbol server support 
+
+Syntax: setsymbolserver
+(lldb) quit

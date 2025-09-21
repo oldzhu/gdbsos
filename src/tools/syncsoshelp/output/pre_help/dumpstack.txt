@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dumpstack
+Displays a native and managed stack trace.
+
+Syntax: dumpstack
+(lldb) quit

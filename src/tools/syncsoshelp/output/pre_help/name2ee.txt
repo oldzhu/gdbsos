@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help name2ee
+Displays the MethodTable structure and EEClass structure for the specified type
+or method in the specified module.
+
+Syntax: name2ee
+(lldb) quit

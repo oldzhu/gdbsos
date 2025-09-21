@@ -1,0 +1,78 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 14722 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 14722 resuming
+Process 14722 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp clrthreads
+Description:
+  Lists the managed threads running.
+
+Usage:
+  > clrthreads [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+COMMAND: clrthreads.
+Threads [-live] [-special] 
+
+Threads (clrthreads) lists all the mananaged threads in the process. 
+
+-live:     optional. Only print threads associated with a live thread.
+-special:  optional. With this switch, the command will display all the special
+           threads created by CLR. Those threads might not be managed threads 
+           so they might not be shown in the first part of the command's 
+           output. Example of special threads include: GC threads (in 
+           concurrent GC and server GC), Debugger helper threads, Finalizer 
+           threads, AppDomain Unload threads, and Threadpool timer threads.
+-managedexception: optional. Sets the current thread to first thread with 
+                   an managed exception for the "printexception" command.
+
+Each thread has many attributes, many of which can be ignored. The important 
+ones are discussed below:
+
+There are three ID columns: 
+
+1) The debugger shorthand ID (When the runtime is hosted this column might 
+   display the special string "<<<<" when this internal thread object is not 
+   associated with any physical thread - this may happen when the host reuses
+   the runtime internal thread object)
+2) The CLR Thread ID
+3) The OS thread ID.  
+
+If PreEmptiveGC is enabled for a thread, then a garbage collection 
+can occur while that thread is running. For example, if you break in while
+a managed thread is making a PInvoke call to a Win32 function, that thread 
+will be in PreEmptive GC mode. 
+
+The Domain column indicates what AppDomain the thread is currently executing
+in. You can pass this value to DumpDomain to find out more. 
+
+The APT column gives the COM apartment mode. 
+
+Exception will list the last thrown exception (if any) for the thread. More
+details can be obtained by passing the pointer value to PrintException. If
+you get the notation "(nested exceptions)", you can get details on those
+exceptions by switching to the thread in question, and running 
+"PrintException -nested".
+(lldb) quit

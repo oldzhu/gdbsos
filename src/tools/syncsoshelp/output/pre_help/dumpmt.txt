@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dumpmt
+Displays information about a method table at the specified address.
+
+Syntax: dumpmt
+(lldb) quit

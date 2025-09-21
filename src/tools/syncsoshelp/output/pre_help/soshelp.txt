@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help soshelp
+Displays all available commands when no parameter is specified, or displays
+detailed help information about the specified command: 'soshelp <command>'.
+
+Syntax: soshelp
+(lldb) quit

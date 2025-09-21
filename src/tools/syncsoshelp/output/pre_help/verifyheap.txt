@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help verifyheap
+Checks the GC heap for signs of corruption.
+
+Syntax: verifyheap
+(lldb) quit

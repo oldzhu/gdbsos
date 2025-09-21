@@ -1,0 +1,74 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 25859 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 25859 resuming
+Process 25859 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp dumpvc
+Description:
+  Displays info about the fields of a value class.
+
+Usage:
+  > dumpvc [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+DumpVC <MethodTable address> <Address>
+
+DumpVC allows you to examine the fields of a value class. In C#, this is a 
+struct, and lives on the stack or within an Object on the GC heap. You need
+to know the MethodTable address to tell SOS how to interpret the fields, as
+a value class is not a first-class object with it's own MethodTable as the
+first field. For example:
+
+    (lldb) sos DumpObj a79d98
+    Name: Mainy
+    MethodTable: 009032d8
+    EEClass: 03ee1424
+    Size: 28(0x1c) bytes
+     (/home/user/pub/unittest)
+    Fields:
+          MT    Field   Offset                 Type       Attr    Value Name
+    0090320c  4000010        4            VALUETYPE   instance 00a79d9c m_valuetype
+    009032d8  400000f        4                CLASS     static 00a79d54 m_sExcep
+
+m_valuetype is a value type. The value in the MT column (0090320c) is the 
+MethodTable for it, and the Value column provides the start address:
+
+    (lldb) sos DumpVC 0090320c 00a79d9c
+    Name: Funny
+    MethodTable 0090320c
+    EEClass: 03ee14b8
+    Size: 28(0x1c) bytes
+     (/home/user/pub/unittest)
+    Fields:
+          MT    Field   Offset                 Type       Attr    Value Name
+    0090320c  4000001        0                CLASS   instance 00a743d8 signature
+    0090320c  4000002        8         System.Int32   instance     2345 m1
+    0090320c  4000003       10       System.Boolean   instance        1 b1
+    0090320c  4000004        c         System.Int32   instance     1234 m2
+    0090320c  4000005        4                CLASS   instance 00a79d98 backpointer
+
+DumpVC is quite a specialized function. Some managed programs make heavy use 
+of value classes, while others do not.
+(lldb) quit

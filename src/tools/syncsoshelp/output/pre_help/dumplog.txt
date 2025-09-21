@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dumplog
+Writes the contents of an in-memory stress log to the specified file.
+
+Syntax: dumplog
+(lldb) quit

@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help token2ee
+Displays the MethodTable structure and MethodDesc structure for the specified
+token and module.
+
+Syntax: token2ee
+(lldb) quit

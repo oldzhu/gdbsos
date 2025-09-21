@@ -1,0 +1,23 @@
+crashinfo                                 Displays the crash details that created the dump.
+d, readmemory <address>                   Dumps memory contents.
+da <address>                              Dumps memory as zero-terminated byte strings.
+db <address>                              Dumps memory as bytes.
+dc <address>                              Dumps memory as chars.
+dd <address>                              Dumps memory as dwords (uint).
+dp <address>                              Dumps memory as pointers.
+dq <address>                              Dumps memory as qwords (ulong).
+du <address>                              Dumps memory as zero-terminated char strings.
+dw <address>                              Dumps memory as words (ushort).
+help, soshelp <command>                   Displays help for a command.
+loadsymbols <url>                         Loads symbols for all modules.
+logclose <path>                           Disables console file logging.
+logging <path>                            Enables/disables internal diagnostic logging.
+logopen <path>                            Enables console file logging.
+modules, lm                               Displays the native modules in the process.
+registers, r                              Displays the thread's registers.
+runtimes, setruntime <id>                 Lists the runtimes in the target or changes the default runtime.
+setclrpath <path>                         Sets the path to load coreclr DAC/DBI files.
+setsymbolserver, SetSymbolServer <url>    Enables and sets symbol server support for symbols and module download.
+sosflush                                  Resets the internal cached state.
+sosstatus                                 Displays internal status.
+threads, setthread <thread>               Lists the threads in the target or sets the current thread.

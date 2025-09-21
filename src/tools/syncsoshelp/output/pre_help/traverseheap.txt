@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help traverseheap
+Writes out heap information to a file in a format understood by the CLR
+Profiler.
+
+Syntax: traverseheap
+(lldb) quit

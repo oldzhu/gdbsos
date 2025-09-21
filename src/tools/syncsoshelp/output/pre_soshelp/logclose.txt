@@ -1,0 +1,15 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp logclose
+Description:
+  Disables console file logging.
+
+Usage:
+  > logclose [<path>] [options]
+
+Arguments:
+  <path>  Log file path.
+
+Options:
+  --disable  Disable console file logging.
+
+(lldb) quit

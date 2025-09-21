@@ -1,0 +1,16 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp modules
+Description:
+  Displays the native modules in the process.
+
+Usage:
+  > modules [options]
+
+Options:
+  -v, --verbose    Displays more details.
+  -s, --segments   Displays the module segments.
+  -r, --resources  Displays the module resources.
+  -n, --name       RegEx filter on module name (path not included).
+  -a, --address    Lookup address in module list.
+
+(lldb) quit

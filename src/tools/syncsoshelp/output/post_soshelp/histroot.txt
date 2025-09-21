@@ -1,0 +1,63 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 31215 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 31215 resuming
+Process 31215 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp histroot
+Description:
+  Displays information related to both promotions and relocations of the 
+  specified root.
+
+Usage:
+  > histroot [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+HistRoot <root>
+
+The root value obtained from sos HistObjFind can be used to track the movement of 
+an object through the GCs.
+
+HistRoot provides information related to both promotions and relocations of the 
+root specified as the argument.
+
+    (lldb) histroot 01e411b8 
+     GCCount    Value       MT Promoted?                Notes
+    ---------------------------------------------------------
+        2296 028970d4 5b6c5cd8       yes 
+        2295 028970d4 5b6c5cd8       yes 
+        2294 028970d4 5b6c5cd8       yes 
+        2293 028970d4 5b6c5cd8       yes 
+        2292 028970d4 5b6c5cd8       yes 
+        2291 028970d4 5b6c5cd8       yes 
+        2290 028970d4 5b6c5cd8       yes 
+        2289 028970d4 5b6c5cd8       yes 
+        2288 028970d4 5b6c5cd8       yes 
+        2287 028970d4 5b6c5cd8       yes 
+        2286 028970d4 5b6c5cd8       yes 
+        2285 028970d4 5b6c5cd8       yes 
+         322 028970e8 5b6c5cd8       yes Duplicate promote/relocs
+    ...
+
+(lldb) quit

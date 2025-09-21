@@ -1,0 +1,97 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 19020 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 19020 resuming
+Process 19020 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp dumparray
+Description:
+  Displays details about a managed array.
+
+Usage:
+  > dumparray [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+DumpArray 
+    [-start <startIndex>]
+    [-length <length>]
+    [-details]
+    [-nofields]
+    <array object address>
+
+This command allows you to examine elements of an array object.
+The arguments in detail:
+ -start <startIndex>: optional, only supported for single dimension array. 
+                      Specify from which index the command shows the elements.
+ -length <length>:    optional, only supported for single dimension array. 
+                      Specify how many elements to show.
+ -details:            optional. Ask the command to print out details
+                      of the element using DumpObj and DumpVC format.
+ -nofields:           optional, only takes effect when -details is used. Do
+                      not print fields of the elements. Useful for arrays of
+                      objects like String
+
+ Example output:
+
+    (lldb) sos DumpArray -start 2 -length 3 -details 00ad28d0 
+    Name: Value[]
+    MethodTable: 03e41044
+    EEClass: 03e40fc0
+    Size: 132(0x84) bytes
+    Array: Rank 1, Number of elements 10, Type VALUETYPE
+    Element Type: Value
+    [2] 00ad28f0
+        Name: Value
+        MethodTable 03e40f4c
+        EEClass: 03ef1698
+        Size: 20(0x14) bytes
+         (/home/user/bugs/225271/arraytest)
+        Fields:
+              MT    Field   Offset                 Type       Attr    Value Name
+        5b9a628c  4000001        0         System.Int32   instance        2 x
+        5b9a628c  4000002        4         System.Int32   instance        4 y
+        5b9a628c  4000003        8         System.Int32   instance        6 z
+    [3] 00ad28fc
+        Name: Value
+        MethodTable 03e40f4c
+        EEClass: 03ef1698
+        Size: 20(0x14) bytes
+         (/home/user/bugs/225271/arraytest)
+        Fields:
+              MT    Field   Offset                 Type       Attr    Value Name
+        5b9a628c  4000001        0         System.Int32   instance        3 x
+        5b9a628c  4000002        4         System.Int32   instance        6 y
+        5b9a628c  4000003        8         System.Int32   instance        9 z
+    [4] 00ad2908
+        Name: Value
+        MethodTable 03e40f4c
+        EEClass: 03ef1698
+        Size: 20(0x14) bytes
+         (/home/user/bugs/225271/arraytest.exe)
+        Fields:
+              MT    Field   Offset                 Type       Attr    Value Name
+        5b9a628c  4000001        0         System.Int32   instance        4 x
+        5b9a628c  4000002        4         System.Int32   instance        8 y
+        5b9a628c  4000003        8         System.Int32   instance       12 z
+(lldb) quit

@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help verifyobj
+Checks the object that is passed as an argument for signs of corruption.
+
+Syntax: verifyobj
+(lldb) quit

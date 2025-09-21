@@ -1,0 +1,16 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp logging
+Description:
+  Enables/disables internal diagnostic logging.
+
+Usage:
+  > logging [<path>] [options]
+
+Arguments:
+  <path>  Log file path.
+
+Options:
+  enable, -e   Enable internal logging.
+  disable, -d  Disable internal logging.
+
+(lldb) quit

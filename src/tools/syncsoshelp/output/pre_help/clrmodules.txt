@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help clrmodules
+Lists the managed modules in the process.
+
+Syntax: clrmodules
+(lldb) quit

@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dumpasync
+Displays information about async "stacks" on the garbage-collected heap.
+
+Syntax: dumpasync
+(lldb) quit

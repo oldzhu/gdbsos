@@ -1,0 +1,27 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help du
+Help requested with ambiguous command name, possible completions:
+	dumpalc
+	dumparray
+	dumpassembly
+	dumpasync
+	dumpclass
+	dumpdelegate
+	dumpdomain
+	dumpgcdata
+	dumpheap
+	dumphttp
+	dumpil
+	dumplog
+	dumpmd
+	dumpmodule
+	dumpmt
+	dumpobj
+	dumprequests
+	dumpruntimetypes
+	dumpsig
+	dumpsigelem
+	dumpstack
+	dumpstackobjects
+	dumpvc
+(lldb) quit

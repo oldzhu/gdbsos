@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dumpdomain
+Displays information about the all assemblies within all the AppDomains or the
+specified one.
+
+Syntax: dumpdomain
+(lldb) quit

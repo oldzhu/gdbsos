@@ -1,0 +1,49 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 41147 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 41147 resuming
+Process 41147 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp timerinfo
+Description:
+  Displays information about running timers.
+
+Usage:
+  > timerinfo
+
+-------------------------------------------------------------------------------
+TimerInfo lists all the running timers followed by a summary of the different items.
+The name of the method to be called (on which instance if any) is also provided when available.
+
+(lldb) ti
+0x000001E29BD45848 @     964 ms every     1000 ms |  0x000001E29BD0C828 (Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure.Heartbeat) ->
+0x000001E19BD0F868 @       1 ms every   ------ ms |  0x000001E19BD0F800 (System.Threading.Tasks.Task+DelayPromise) -> System.Threading.Tasks.Task+<>c.<Delay>b__260_1
+0x000001E09BD09B40 @       1 ms every   ------ ms |  0x000001E09BD09AD8 (System.Threading.Tasks.Task+DelayPromise) -> System.Threading.Tasks.Task+<>c.<Delay>b__260_1
+0x000001E29BD58C68 @       1 ms every   ------ ms |  0x000001E29BD58C00 (System.Threading.Tasks.Task+DelayPromise) -> System.Threading.Tasks.Task+<>c.<Delay>b__260_1
+0x000001E29BCB1398 @    5000 ms every   ------ ms |  0x0000000000000000 () -> System.Diagnostics.Tracing.EventPipeController.PollForTracingCommand
+
+   5 timers
+-----------------------------------------------
+   1 | @     964 ms every     1000 ms | (Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure.Heartbeat) ->
+   1 | @    5000 ms every   ------ ms | () -> System.Diagnostics.Tracing.EventPipeController.PollForTracingCommand
+   3 | @       1 ms every   ------ ms | (System.Threading.Tasks.Task+DelayPromise) -> System.Threading.Tasks.Task+<>c.<Delay>b__260_1
+(lldb) quit

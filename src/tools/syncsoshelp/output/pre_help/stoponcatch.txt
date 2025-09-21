@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help stoponcatch
+Target process will break the next time a managed exception is caught during
+execution.
+
+Syntax: stoponcatch
+(lldb) quit

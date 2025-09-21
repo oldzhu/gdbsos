@@ -1,0 +1,7 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help setsostid
+Set the current os tid/thread index instead of using the one lldb provides.
+setsostid <tid> <index>
+
+Syntax: setsostid
+(lldb) quit

@@ -13,6 +13,18 @@ except Exception:
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
+# Optional generated help import (produced by tools/syncsoshelp). Safe to miss.
+try:
+    from _generated_help import (
+        GENERATED_COMMAND_HELP as _GH_CMD,
+        GENERATED_EXPORTS as _GH_EXP,
+        GENERATED_STATIC_BLOCK as _GH_STATIC,
+    )
+except Exception:
+    _GH_CMD = None
+    _GH_EXP = None
+    _GH_STATIC = None
+
 from abi import PVOID, PCSTR, HRESULT
 from services import GdbServices
 from tracing import TRACE_ENABLED, SOSTraceCommand
@@ -105,6 +117,15 @@ MANUAL_EXPORTS = {
     "dso": "DumpStackObjects",
     "dumpstackobjects": "DumpStackObjects",
 }
+
+# Merge any generated export mappings
+try:
+    if _GH_EXP:
+        for k, v in _GH_EXP.items():
+            if k and v:
+                MANUAL_EXPORTS[k] = v
+except Exception:
+    pass
 
 def _to_export_candidates_common(cmd: str):
     """Build a list of plausible export names for a given SOS command name."""
@@ -691,32 +712,35 @@ def _print_sos_help_static(arg: Optional[str]):
             desc = f"Run SOS command '{cmd}'."
         return f"{cmd} -- {desc}\n"
 
-    # Exact LLDB-style header lines and order for pre-run soshelp
-    LLDB_STATIC_BLOCK = [
-        "crashinfo                                 Displays the crash details that created the dump.",
-        "d, readmemory <address>                   Dumps memory contents.",
-        "da <address>                              Dumps memory as zero-terminated byte strings.",
-        "db <address>                              Dumps memory as bytes.",
-        "dc <address>                              Dumps memory as chars.",
-        "dd <address>                              Dumps memory as dwords (uint).",
-        "dp <address>                              Dumps memory as pointers.",
-        "dq <address>                              Dumps memory as qwords (ulong).",
-        "du <address>                              Dumps memory as zero-terminated char strings.",
-        "dw <address>                              Dumps memory as words (ushort).",
-        "help, soshelp <command>                   Displays help for a command.",
-        "loadsymbols <url>                         Loads symbols for all modules.",
-        "logclose <path>                           Disables console file logging.",
-        "logging <path>                            Enables/disables internal diagnostic logging.",
-        "logopen <path>                            Enables console file logging.",
-        "modules, lm                               Displays the native modules in the process.",
-        "registers, r                              Displays the thread's registers.",
-        "runtimes, setruntime <id>                 Lists the runtimes in the target or changes the default runtime.",
-        "setclrpath <path>                         Sets the path to load coreclr DAC/DBI files.",
-        "setsymbolserver, SetSymbolServer <url>    Enables and sets symbol server support for symbols and module download.",
-        "sosflush                                  Resets the internal cached state.",
-        "sosstatus                                 Displays internal status.",
-        "threads, setthread <thread>               Lists the threads in the target or sets the current thread.",
-    ]
+    # Prefer generated LLDB-style static block if available, else fallback to baked list
+    if _GH_STATIC and isinstance(_GH_STATIC, list) and _GH_STATIC:
+        LLDB_STATIC_BLOCK = list(_GH_STATIC)
+    else:
+        LLDB_STATIC_BLOCK = [
+            "crashinfo                                 Displays the crash details that created the dump.",
+            "d, readmemory <address>                   Dumps memory contents.",
+            "da <address>                              Dumps memory as zero-terminated byte strings.",
+            "db <address>                              Dumps memory as bytes.",
+            "dc <address>                              Dumps memory as chars.",
+            "dd <address>                              Dumps memory as dwords (uint).",
+            "dp <address>                              Dumps memory as pointers.",
+            "dq <address>                              Dumps memory as qwords (ulong).",
+            "du <address>                              Dumps memory as zero-terminated char strings.",
+            "dw <address>                              Dumps memory as words (ushort).",
+            "help, soshelp <command>                   Displays help for a command.",
+            "loadsymbols <url>                         Loads symbols for all modules.",
+            "logclose <path>                           Disables console file logging.",
+            "logging <path>                            Enables/disables internal diagnostic logging.",
+            "logopen <path>                            Enables console file logging.",
+            "modules, lm                               Displays the native modules in the process.",
+            "registers, r                              Displays the thread's registers.",
+            "runtimes, setruntime <id>                 Lists the runtimes in the target or changes the default runtime.",
+            "setclrpath <path>                         Sets the path to load coreclr DAC/DBI files.",
+            "setsymbolserver, SetSymbolServer <url>    Enables and sets symbol server support for symbols and module download.",
+            "sosflush                                  Resets the internal cached state.",
+            "sosstatus                                 Displays internal status.",
+            "threads, setthread <thread>               Lists the threads in the target or sets the current thread.",
+        ]
 
     # If a specific command is requested, try to print the most relevant single line
     if arg:
@@ -999,6 +1023,13 @@ COMMAND_HELP = {
     "stoponcatch": "Enable/disable stop on managed exception catch.",
     "token2ee": "Map metadata token to EE structures.",
 }
+
+# Merge any generated command help last so it can override baked-in fallbacks
+try:
+    if _GH_CMD:
+        COMMAND_HELP.update({str(k): str(v) for k, v in _GH_CMD.items()})
+except Exception:
+    pass
 
 
 def _register_default_commands():

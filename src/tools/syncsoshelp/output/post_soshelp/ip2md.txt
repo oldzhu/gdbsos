@@ -1,0 +1,72 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 31757 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 31757 resuming
+Process 31757 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp ip2md
+Description:
+  Displays the MethodDesc structure at the specified address in code that has 
+  been JIT-compiled.
+
+Usage:
+  > ip2md [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+IP2MD <Code address>
+
+Given an address in managed JITTED code, IP2MD attempts to find the MethodDesc
+associated with it. For example, this output from K:
+
+    (lldb) bt 
+        ...
+        frame #9: 0x00007fffffffbf60 0x00007ffff61c6d89 libcoreclr.so`MethodDesc::DoPrestub(this=0x00007ffff041f870, pDispatchingMT=0x0000000000000000) + 3001 at prestub.cpp:1490
+        frame #10: 0x00007fffffffc140 0x00007ffff61c5f17 libcoreclr.so`::PreStubWorker(pTransitionBlock=0x00007fffffffc9a8, pMD=0x00007ffff041f870) + 1399 at prestub.cpp:1037
+        frame #11: 0x00007fffffffc920 0x00007ffff5f5238c libcoreclr.so`ThePreStub + 92 at theprestubamd64.S:800
+        frame #12: 0x00007fffffffca10 0x00007ffff04981cc
+        frame #13: 0x00007fffffffca30 0x00007ffff049773c
+        frame #14: 0x00007fffffffca80 0x00007ffff04975ad
+        ...
+        frame #22: 0x00007fffffffcc90 0x00007ffff5f51a0f libcoreclr.so`CallDescrWorkerInternal + 124 at calldescrworkeramd64.S:863
+        frame #23: 0x00007fffffffccb0 0x00007ffff5d6d6dc libcoreclr.so`CallDescrWorkerWithHandler(pCallDescrData=0x00007fffffffce80, fCriticalCall=0) + 476 at callhelpers.cpp:88
+        frame #24: 0x00007fffffffcd00 0x00007ffff5d6eb38 libcoreclr.so`MethodDescCallSite::CallTargetWorker(this=0x00007fffffffd0c8, pArguments=0x00007fffffffd048) + 2504 at callhelpers.cpp:633
+
+    (lldb) ip2md 0x00007ffff049773c
+        MethodDesc:   00007ffff7f71920
+        Method Name:  Microsoft.Win32.SafeHandles.SafeFileHandle.Open(System.Func`1<Int32>)
+        Class:        00007ffff0494bf8
+        MethodTable:  00007ffff7f71a58
+        mdToken:      0000000006000008
+        Module:       00007ffff7f6b938
+        IsJitted:     yes
+        CodeAddr:     00007ffff04976c0
+
+We have taken a return address into Mainy.Main, and discovered information 
+about that method. You could run U, DumpMT, DumpClass, DumpMD, or 
+DumpModule on the fields listed to learn more.
+
+The "Source line" output will only be present if the debugger can find the 
+symbols for the managed module containing the given <code address>, and if the 
+debugger is configured to load line number information.
+(lldb) quit

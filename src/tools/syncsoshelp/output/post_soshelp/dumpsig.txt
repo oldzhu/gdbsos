@@ -1,0 +1,63 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 25133 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 25133 resuming
+Process 25133 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp dumpsig
+Description:
+  Dumps the signature of a method or field specified by <sigaddr> <moduleaddr>.
+
+Usage:
+  > dumpsig [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+DumpSig <sigaddr> <moduleaddr>
+
+This command dumps the signature of a method or field given by <sigaddr>.  This is
+useful when you are debugging parts of the runtime which returns a raw PCCOR_SIGNATURE
+structure and need to know what its contents are.
+
+Sample output for a method:
+    0:000> sos DumpSig 0x000007fe`ec20879d 0x000007fe`eabd1000
+    [DEFAULT] [hasThis] Void (Boolean,String,String)
+
+The first section of the output is the calling convention.  This includes, but is not
+limited to, "[DEFAULT]", "[C]", "[STDCALL]", "[THISCALL]", and so on.  The second
+portion of the output is either "[hasThis]" or "[explicit]" for whether the method
+is an instance method or a static method respectively.  The third portion of the 
+output is the return value (in this case a "void").  Finally, the method's arguments
+are printed as the final portion of the output.
+
+Sample output for a field:
+    0:000> sos DumpSig 0x000007fe`eb7fd8cd 0x000007fe`eabd1000
+    [FIELD] ValueClass System.RuntimeTypeHandle 
+
+DumpSig will also work with generics.  Here is the output for the following
+function:
+    public A Test(IEnumerable<B> n)
+
+    0:000> sos DumpSig 00000000`00bc2437 000007ff00043178 
+    [DEFAULT] [hasThis] __Canon (Class System.Collections.Generic.IEnumerable`1<__Canon>)
+(lldb) quit

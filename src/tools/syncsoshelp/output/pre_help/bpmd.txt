@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help bpmd
+Creates a breakpoint at the specified managed method in the specified module.
+
+Syntax: bpmd
+(lldb) quit

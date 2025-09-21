@@ -1,0 +1,24 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp runtimes
+Description:
+  Lists the runtimes in the target or changes the default runtime.
+
+Usage:
+  > runtimes [<id>] [options]
+
+Arguments:
+  <id>  Switch to the runtime by id.
+
+Options:
+  -f, -netfx                      Switches to the desktop .NET Framework if 
+                                  exists.
+  -c, -netcore                    Switches to the .NET Core or .NET 5+ runtime 
+                                  if exists.
+  -a, --all                       Forces all runtimes to be enumerated.
+  --usecdac                       Use the CDAC if available and requested 
+                                  (true/false).
+  --forceusecdac                  Always use the CDAC (true/false).
+  -v, --DacSignatureVerification  Enforce the proper DAC certificate signing 
+                                  when loaded (true/false).
+
+(lldb) quit

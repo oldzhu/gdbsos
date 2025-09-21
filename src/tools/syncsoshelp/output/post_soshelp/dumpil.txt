@@ -1,0 +1,77 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 22736 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 22736 resuming
+Process 22736 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp dumpil
+Description:
+  Displays the Microsoft intermediate language (MSIL) that is associated with a 
+  managed method.
+
+Usage:
+  > dumpil [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+DumpIL <Managed DynamicMethod object> | 
+       <DynamicMethodDesc pointer> |
+       <MethodDesc pointer> |
+       -i <IL pointer>
+
+DumpIL prints the IL code associated with a managed method. We added this
+function specifically to debug DynamicMethod code which was constructed on
+the fly. Happily it works for non-dynamic code as well.
+
+You can use it in four ways: 
+
+  1) If you have a System.Reflection.Emit.DynamicMethod object, just pass
+     the pointer as the first argument. 
+  2) If you have a DynamicMethodDesc pointer you can use that to print the
+     IL associated with the dynamic method.
+  3) If you have an ordinary MethodDesc, you can see the IL for that as well,
+     just pass it as the first argument.
+  4) If you have a pointer directly to the IL, specify -i followed by the
+     the IL address.  This is useful for writers of profilers that instrument
+     IL.
+     
+
+Note that dynamic IL is constructed a bit differently. Rather than referring
+to metadata tokens, the IL points to objects in a managed object array. Here
+is a simple example of the output for a dynamic method:
+
+  0:000> sos DumpIL b741dc
+  This is dynamic IL. Exception info is not reported at this time.
+  If a token is unresolved, run "sos DumpObj <addr>" on the addr given
+  in parenthesis. You can also look at the token table yourself, by
+  running "DumpArray 00b77388".
+
+  IL_0000: ldstr 70000002 "Inside invoked method "
+  IL_0005: call 6000003 System.Console.WriteLine(System.String)
+  IL_000a: ldc.i4.1
+  IL_000b: newarr 2000004 "System.Int32"
+  IL_0010: stloc.0
+  IL_0011: ldloc.0
+  IL_0012: ret
+
+(lldb) quit

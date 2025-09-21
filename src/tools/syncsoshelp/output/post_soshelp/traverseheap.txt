@@ -1,0 +1,77 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 42021 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 42021 resuming
+Process 42021 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp traverseheap
+Description:
+  Writes out heap information to a file in a format understood by the CLR 
+  Profiler.
+
+Usage:
+  > traverseheap [<filename>] [options]
+
+Arguments:
+  <filename>
+
+Options:
+  -xml
+
+TraverseHeap writes out a file in a format understood by the CLR Profiler. 
+You can download the CLR Profiler from this link:
+
+http://www.microsoft.com/downloads/details.aspx?FamilyId=86CE6052-D7F4-4AEB-
+9B7A-94635BEEBDDA&displaylang=en
+
+It creates a graphical display of the GC heap to help you analyze the state of
+your application. 
+
+If you pass the -verify option it will do more sanity checking of the heap
+as it dumps it.   Use this option if heap corruption is suspected.
+
+If you pass the "-xml" flag, the file is instead written out in an easy to 
+understand xml format:
+
+    <gcheap>
+        <types>
+            <type id="1" name="System.String">
+            ...
+        </types>
+        <roots>
+            <root kind="handle" address="0x00a73ff0"/>
+            <root kind="stack" address="0x0069f0e0"/>
+            ...
+        </roots>
+        <objects>
+            <object address="0x00b73030" typeid="1" size="300"/>
+            <object address="0x00b75054" typeid="5" size="20">
+                <member address="0x00b75088" />
+                ...
+            </object>
+            ...
+        </objects>
+    </gcheap>
+
+You can break into your process, load SOS, take a snapshot of your heap with 
+this function, then continue.
+(lldb) quit

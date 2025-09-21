@@ -1,0 +1,12 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp registers
+Description:
+  Displays the thread's registers.
+
+Usage:
+  > registers [options]
+
+Options:
+  -v, --verbose  Displays more details.
+
+(lldb) quit

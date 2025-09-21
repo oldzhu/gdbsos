@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help listnearobj
+Displays the object preceding and succeeding the specified address.
+
+Syntax: listnearobj
+(lldb) quit

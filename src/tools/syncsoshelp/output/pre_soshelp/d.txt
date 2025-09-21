@@ -1,0 +1,24 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp d
+Description:
+  Dumps memory contents.
+
+Usage:
+  > d [<address>] [options]
+
+Arguments:
+  <address>  Address to dump.
+
+Options:
+  -e, --end         Ending address to dump.
+  -c, --count       Number of elements to dump.
+  -l, --length      Size of elements to dump.
+  -w, --width       Number of elements to dump per row.
+  -a, --ascii       Print ascii dump as well.
+  -u, --unicode     Print unicode dump as well.
+  --ascii-string    Print as ascii string as well.
+  --unicode-string  Print as unicode string as well.
+  -h, --hex-prefix  Add a hex prefix (0x) to the data displayed.
+  --show-address    Display the addresses of data found.
+
+(lldb) quit

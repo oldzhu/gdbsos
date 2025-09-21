@@ -1,0 +1,73 @@
+(lldb) settings set target.disable-aslr true
+(lldb) settings set auto-confirm true
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) target create "/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow"
+Current executable set to '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64).
+(lldb) process launch --stop-at-entry
+Process 24096 launched: '/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow' (x86_64)
+(lldb) br set -r coreclr_execute_assembly
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) continue
+1 location added to breakpoint 1
+Process 24096 resuming
+Process 24096 stopped
+* thread #1, name = 'SimpleThrow', stop reason = breakpoint 1.1
+    frame #0: 0x00007ffff6c88a91 libcoreclr.so`::coreclr_execute_assembly(hostHandle=0x00005555555ca1e0, domainId=1, argc=0, argv=0x0000000000000000, managedAssemblyPath="/workspaces/gdbsos/src/diagnostics/artifacts/bin/SimpleThrow/Debug/net8.0/SimpleThrow.dll", exitCode=0x00007fffffffd6e0) at exports.cpp:487:18
+   484 	            const char* managedAssemblyPath,
+   485 	            unsigned int* exitCode)
+   486 	{
+-> 487 	    if (exitCode == NULL)
+    	                 ^
+   488 	    {
+   489 	        return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
+   490 	    }
+
+(lldb) soshelp dumpobj
+Description:
+  Displays info about an object at the specified address.
+
+Usage:
+  > dumpobj [<arguments>...]
+
+Arguments:
+  <arguments>  Arguments to SOS command.
+
+DumpObj [-nofields] <object address>
+
+This command allows you to examine the fields of an object, as well as learn 
+important properties of the object such as the EEClass, the MethodTable, and 
+the size.
+
+You might find an object pointer by running DumpStackObjects and choosing
+from the resultant list. Here is a simple object:
+
+    (lldb) dumpobj a79d40
+    Name: Customer
+    MethodTable: 009038ec
+    EEClass: 03ee1b84
+    Size: 20(0x14) bytes
+     (/home/user/pub/unittest)
+    Fields:
+          MT    Field   Offset                 Type  VT     Attr    Value Name
+    009038ec  4000008        4             Customer   0 instance 00a79ce4 name
+    009038ec  4000009        8                 Bank   0 instance 00a79d2c bank
+
+Note that fields of type Customer and Bank are themselves objects, and you can 
+run DumpObj on them too. You could look at the field directly in memory using
+the offset given. "dd a79d40+8 l1" would allow you to look at the bank field 
+directly. Be careful about using this to set memory breakpoints, since objects
+can move around in the garbage collected heap.
+
+What else can you do with an object? You might run GCRoot, to determine what 
+roots are keeping it alive. Or you can find all objects of that type with 
+"dumpheap -type Customer".
+
+The column VT contains the value 1 if the field is a valuetype structure, and
+0 if the field contains a pointer to another object. For valuetypes, you can 
+take the MethodTable pointer in the MT column, and the Value and pass them to 
+the command DumpVC.
+
+The arguments in detail:
+-nofields:     do not print fields of the object, useful for objects like String
+(lldb) quit

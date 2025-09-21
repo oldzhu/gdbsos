@@ -1,0 +1,6 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) help dumprequests
+Displays all currently active incoming HTTP requests.
+
+Syntax: dumprequests
+(lldb) quit

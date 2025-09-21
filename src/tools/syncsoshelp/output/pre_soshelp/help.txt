@@ -1,0 +1,12 @@
+(lldb) plugin load /workspaces/gdbsos/src/diagnostics/artifacts/bin/linux.x64.Debug/libsosplugin.so
+(lldb) soshelp help
+Description:
+  Displays help for a command.
+
+Usage:
+  > help [<command>]
+
+Arguments:
+  <command>  Command to find help.
+
+(lldb) quit
