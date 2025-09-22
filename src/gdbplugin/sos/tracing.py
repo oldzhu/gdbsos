@@ -56,7 +56,8 @@ class SOSTraceCommand(gdb.Command):
     Examples:
         sostrace on bpmd
         sostrace on bpmd,stop,newobj
-    Categories are user-defined labels we emit from the plugin. If none are set, all traces show.
+    Categories are user-defined labels we emit from the plugin. Common cats: help, gen, bpmd, read, write.
+    If none are set, all traces show.
     """
     def __init__(self):
         super(SOSTraceCommand, self).__init__("sostrace", gdb.COMMAND_NONE)

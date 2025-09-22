@@ -27,7 +27,7 @@ except Exception:
 
 from abi import PVOID, PCSTR, HRESULT
 from services import GdbServices
-from tracing import TRACE_ENABLED, SOSTraceCommand
+from tracing import TRACE_ENABLED, SOSTraceCommand, trace_cat
 
 def _find_libsos() -> Optional[str]:
     """Locate libsos.so co-located with this script (same directory)."""
@@ -121,9 +121,11 @@ MANUAL_EXPORTS = {
 # Merge any generated export mappings
 try:
     if _GH_EXP:
+        trace_cat('gen', f"[gen] generated exports available: {len(_GH_EXP)}")
         for k, v in _GH_EXP.items():
             if k and v:
                 MANUAL_EXPORTS[k] = v
+        trace_cat('gen', "[gen] merged generated exports into MANUAL_EXPORTS")
 except Exception:
     pass
 
@@ -507,14 +509,70 @@ class SOSCommand(gdb.Command):
                 # - 'help' should NOT initialize hosting; show managed help only if runtime already loaded
                 # - 'soshelp' SHOULD attempt to initialize hosting and show managed help; else fallback to static
                 if lower_name == "soshelp":
+                    try:
+                        trace_cat('help', f"[help] soshelp requested; args='{arg or ''}'")
+                    except Exception:
+                        pass
+                    # If runtime is NOT loaded yet, emulate LLDB pre-run soshelp by printing the static block
+                    try:
+                        if not SOSCommand._is_runtime_loaded():
+                            trace_cat('help', "[help] soshelp pre-run: using static block (LLDB parity)")
+                            _print_sos_help_static(arg)
+                            return
+                    except Exception:
+                        pass
                     # 0) Prefer native Help export first; it may print a partial list and/or try to initialize hosting
                     try:
                         sos_help = getattr(SOSCommand.sos_handle, "Help")
                         sos_help.argtypes = [PVOID, PCSTR]
                         sos_help.restype = HRESULT
                         client_ptr = ctypes.byref(SOSCommand.gdb_services.illldb_ptr)
+                        # If a subcommand was requested, capture output to detect "not found" and append our one-liner
+                        capture = bool(arg and arg.strip())
+                        if capture:
+                            try:
+                                SOSCommand.gdb_services._capture_output = True
+                                SOSCommand.gdb_services._capture_output_list = []
+                            except Exception:
+                                capture = False
                         hrh = sos_help(client_ptr, (arg or "").encode('utf-8'))
+                        addendum_done = False
+                        if capture:
+                            try:
+                                text = ''.join(getattr(SOSCommand.gdb_services, '_capture_output_list', []) or [])
+                                SOSCommand.gdb_services._capture_output = False
+                                # Heuristic: if native help printed a 'not found' message, add our one-liner for convenience
+                                if hrh == 0 and text and ('not found' in text.lower()):
+                                    token = (arg or '').strip().split()[0].lower()
+                                    trace_cat('help', f"[help] native help missing docs for '{token}'; printing one-liner addendum")
+                                    gdb.write("\n")
+                                    gdb.write("Suggested: ")
+                                    # Reuse the same formatter as static block for consistency
+                                    def _line_for(token_cmd: str) -> str:
+                                        desc = COMMAND_HELP.get(token_cmd)
+                                        if not desc:
+                                            desc = f"Run SOS command '{token_cmd}'."
+                                        else:
+                                            try:
+                                                src = (_COMMAND_HELP_PROVENANCE.get(token_cmd, 'baked') if '_COMMAND_HELP_PROVENANCE' in globals() else 'baked')
+                                                trace_cat('help', f"[help] one-liner for '{token_cmd}' source={src}")
+                                            except Exception:
+                                                pass
+                                        return f"{token_cmd} -- {desc}\n"
+                                    gdb.write(_line_for(token))
+                                    addendum_done = True
+                            except Exception:
+                                try:
+                                    SOSCommand.gdb_services._capture_output = False
+                                except Exception:
+                                    pass
+                        try:
+                            trace_cat('help', f"[help] native Help export returned hr=0x{(hrh or 0) & 0xFFFFFFFF:08x}")
+                        except Exception:
+                            pass
                         if hrh == 0:
+                            if addendum_done:
+                                return
                             return
                     except Exception:
                         pass
@@ -522,14 +580,27 @@ class SOSCommand(gdb.Command):
                     try:
                         hres = None
                         if getattr(SOSCommand, 'sos_init_hosting', None):
+                            try:
+                                trace_cat('help', "[help] attempting hosting init via libsos forwarder")
+                            except Exception:
+                                pass
                             hres = SOSCommand.sos_init_hosting(None, 0)
                         elif getattr(SOSCommand, 'bridge_handle', None):
                             init_hosting = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
                             if init_hosting is not None:
                                 init_hosting.argtypes = [ctypes.c_char_p, ctypes.c_int]
                                 init_hosting.restype = ctypes.c_int
+                                try:
+                                    trace_cat('help', "[help] attempting hosting init via bridge")
+                                except Exception:
+                                    pass
                                 hres = init_hosting(None, 0)
                         # ignore hres; proceed to managed help attempt regardless
+                        try:
+                            if hres is not None:
+                                trace_cat('help', f"[help] hosting init attempt hr=0x{(hres or 0) & 0xFFFFFFFF:08x}")
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     # 2) Try managed 'help'
@@ -539,39 +610,75 @@ class SOSCommand(gdb.Command):
                             dispatch = bridge.DispatchManagedCommand
                             dispatch.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
                             dispatch.restype = ctypes.c_int
-                            if dispatch(b"help", (arg or "").encode('utf-8')) == 0:
+                            hrm = dispatch(b"help", (arg or "").encode('utf-8'))
+                            try:
+                                trace_cat('help', f"[help] bridge managed 'help' dispatch hr=0x{(hrm or 0) & 0xFFFFFFFF:08x}")
+                            except Exception:
+                                pass
+                            if hrm == 0:
                                 return
                     except Exception:
                         pass
                     try:
                         if getattr(SOSCommand, 'sos_dispatch_managed', None):
-                            if SOSCommand.sos_dispatch_managed(b"help", (arg or "").encode('utf-8')) == 0:
+                            hrf = SOSCommand.sos_dispatch_managed(b"help", (arg or "").encode('utf-8'))
+                            try:
+                                trace_cat('help', f"[help] libsos forwarder managed 'help' hr=0x{(hrf or 0) & 0xFFFFFFFF:08x}")
+                            except Exception:
+                                pass
+                            if hrf == 0:
                                 return
                     except Exception:
                         pass
                     # 3) Static fallback
+                    try:
+                        trace_cat('help', "[help] falling back to static soshelp (generated/baked)")
+                    except Exception:
+                        pass
                     _print_sos_help_static(arg)
                     return
                 else:
+                    try:
+                        trace_cat('help', f"[help] 'help' requested; args='{arg or ''}'")
+                    except Exception:
+                        pass
                     # 'help' command: do not initialize hosting, but use managed if runtime is ready
                     if SOSCommand._is_runtime_loaded() and SOSCommand._try_initialize_hosting_if_needed():
+                        try:
+                            trace_cat('help', "[help] runtime loaded: attempting managed 'help'")
+                        except Exception:
+                            pass
                         try:
                             bridge = getattr(SOSCommand, 'bridge_handle', None)
                             if bridge is not None:
                                 dispatch = bridge.DispatchManagedCommand
                                 dispatch.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
                                 dispatch.restype = ctypes.c_int
-                                if dispatch(b"help", (arg or "").encode('utf-8')) == 0:
+                                hrm = dispatch(b"help", (arg or "").encode('utf-8'))
+                                try:
+                                    trace_cat('help', f"[help] bridge managed 'help' dispatch hr=0x{(hrm or 0) & 0xFFFFFFFF:08x}")
+                                except Exception:
+                                    pass
+                                if hrm == 0:
                                     return
                         except Exception:
                             pass
                         try:
                             if getattr(SOSCommand, 'sos_dispatch_managed', None):
-                                if SOSCommand.sos_dispatch_managed(b"help", (arg or "").encode('utf-8')) == 0:
+                                hrf = SOSCommand.sos_dispatch_managed(b"help", (arg or "").encode('utf-8'))
+                                try:
+                                    trace_cat('help', f"[help] libsos forwarder managed 'help' hr=0x{(hrf or 0) & 0xFFFFFFFF:08x}")
+                                except Exception:
+                                    pass
+                                if hrf == 0:
                                     return
                         except Exception:
                             pass
                     # Static help if runtime isn't ready
+                    try:
+                        trace_cat('help', "[help] using static help (runtime not ready or managed path failed)")
+                    except Exception:
+                        pass
                     _print_sos_help_static(arg)
                     return
 
@@ -710,11 +817,18 @@ def _print_sos_help_static(arg: Optional[str]):
         if not desc:
             # fall back to a generic description
             desc = f"Run SOS command '{cmd}'."
+        else:
+            try:
+                src = (_COMMAND_HELP_PROVENANCE.get(cmd, 'baked') if '_COMMAND_HELP_PROVENANCE' in globals() else 'baked')
+                trace_cat('help', f"[help] one-liner for '{cmd}' source={src}")
+            except Exception:
+                pass
         return f"{cmd} -- {desc}\n"
 
     # Prefer generated LLDB-style static block if available, else fallback to baked list
     if _GH_STATIC and isinstance(_GH_STATIC, list) and _GH_STATIC:
         LLDB_STATIC_BLOCK = list(_GH_STATIC)
+        trace_cat('help', f"[help] using generated static block ({len(LLDB_STATIC_BLOCK)} lines)")
     else:
         LLDB_STATIC_BLOCK = [
             "crashinfo                                 Displays the crash details that created the dump.",
@@ -740,10 +854,12 @@ def _print_sos_help_static(arg: Optional[str]):
             "sosflush                                  Resets the internal cached state.",
             "sosstatus                                 Displays internal status.",
             "threads, setthread <thread>               Lists the threads in the target or sets the current thread.",
-        ]
+    ]
+        trace_cat('help', f"[help] using baked static block ({len(LLDB_STATIC_BLOCK)} lines)")
 
     # If a specific command is requested, try to print the most relevant single line
     if arg:
+        trace_cat('help', f"[help] soshelp static single-line for: {arg}")
         token = arg.strip().split()[0].lower()
         # Try to find a matching LLDB-style line first
         for ln in LLDB_STATIC_BLOCK:
@@ -752,9 +868,11 @@ def _print_sos_help_static(arg: Optional[str]):
             aliases = ln.split()[0].split(',') if ',' in ln.split()[0] else [head]
             aliases = [a.strip().lower() for a in aliases]
             if token in aliases:
+                trace_cat('help', f"[help] matched static entry for token='{token}'")
                 gdb.write(ln + "\n")
                 return
         # Fall back to our dynamic description
+        trace_cat('help', f"[help] no static entry; fallback to COMMAND_HELP for token='{token}'")
         gdb.write(line_for(token))
         return
 
@@ -774,10 +892,13 @@ def _print_sos_help_static(arg: Optional[str]):
                 printed.add(alias)
     printed.update({'help'})
 
+    _extra = 0
     for cmd in sorted(COMMAND_NAMES):
         if cmd in printed:
             continue
         gdb.write(line_for(cmd))
+        _extra += 1
+    trace_cat('help', f"[help] printed static block + {_extra} extra COMMAND_HELP entries")
 
 
 class SosExecUmbrellaCommand(gdb.Command):
@@ -813,7 +934,9 @@ class SosExecUmbrellaCommand(gdb.Command):
         
         # For help/soshelp, prefer managed help when CLR is loaded
         if name in ("help", "soshelp"):
+            trace_cat('help', f"[help] request: name='{name}' args='{rest}'")
             if SOSCommand._is_runtime_loaded() and SOSCommand._try_initialize_hosting_if_needed():
+                trace_cat('help', "[help] runtime loaded: attempting managed help via bridge/libsos")
                 cmd = b"help"
                 args = rest.encode('utf-8')
                 try:
@@ -823,6 +946,7 @@ class SosExecUmbrellaCommand(gdb.Command):
                         dispatch.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
                         dispatch.restype = ctypes.c_int
                         h = dispatch(cmd, args)
+                        trace_cat('help', f"[help] bridge DispatchManagedCommand => 0x{h:08x}")
                         if h == 0:
                             return
                 except Exception:
@@ -830,11 +954,13 @@ class SosExecUmbrellaCommand(gdb.Command):
                 try:
                     if getattr(SOSCommand, 'sos_dispatch_managed', None):
                         h2 = SOSCommand.sos_dispatch_managed(cmd, args)
+                        trace_cat('help', f"[help] libsos forwarder managed dispatch => 0x{h2:08x}")
                         if h2 == 0:
                             return
                 except Exception:
                     pass
             # Fall back to static help if managed isn't available
+            trace_cat('help', "[help] falling back to static soshelp")
             _print_sos_help_static(rest)
             return
 
@@ -1027,6 +1153,9 @@ COMMAND_HELP = {
 # Merge any generated command help last so it can override baked-in fallbacks
 try:
     if _GH_CMD:
+        # Track provenance for visibility in help traces
+        global _COMMAND_HELP_PROVENANCE
+        _COMMAND_HELP_PROVENANCE = {k.lower(): 'generated' for k in _GH_CMD.keys()}
         COMMAND_HELP.update({str(k): str(v) for k, v in _GH_CMD.items()})
 except Exception:
     pass
@@ -1436,3 +1565,32 @@ def _register_wrapper_commands():
 
 
 _register_wrapper_commands()
+
+
+class SosHelpSourcesCommand(gdb.Command):
+    """List per-command help one-liner provenance (generated vs baked).
+    Usage:
+        sos help-sources            # list all
+        sos help-sources <filter>   # filter by substring in command name
+    """
+    def __init__(self):
+        super(SosHelpSourcesCommand, self).__init__("sos help-sources", gdb.COMMAND_SUPPORT)
+
+    def invoke(self, arg, from_tty):
+        filt = (arg or "").strip().lower()
+        prov = globals().get('_COMMAND_HELP_PROVENANCE', {}) or {}
+        # Build sorted list of known commands from COMMAND_HELP
+        items = sorted((name for name in COMMAND_HELP.keys()), key=lambda x: x.lower())
+        count = 0
+        for name in items:
+            ln = name.lower()
+            if filt and (filt not in ln):
+                continue
+            src = prov.get(ln, 'baked')
+            gdb.write(f"{name:24s} : {src}\n")
+            count += 1
+        if count == 0:
+            gdb.write("No commands matched.\n")
+
+
+SosHelpSourcesCommand()

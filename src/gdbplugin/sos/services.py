@@ -2142,6 +2142,16 @@ class GdbServices:
                 )
                 if suppressed:
                     return
+            # Optionally capture output for callers (e.g., soshelp addendum heuristic)
+            try:
+                if getattr(self, "_capture_output", False):
+                    lst = getattr(self, "_capture_output_list", None)
+                    if lst is None:
+                        lst = []
+                        self._capture_output_list = lst
+                    lst.append(msg)
+            except Exception:
+                pass
             gdb.write(msg)
         except KeyboardInterrupt:
             # User quit the pager; set interrupted and stop writing further
