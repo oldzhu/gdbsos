@@ -4,6 +4,7 @@ build/
 out/
 artifacts/
 obj/
+src/tools/syncsoshelp/output/
 CMakeFiles/
 CMakeCache.txt
 *.dir/
