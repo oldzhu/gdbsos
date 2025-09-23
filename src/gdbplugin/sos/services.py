@@ -2,6 +2,7 @@ import os
 import sys
 import ctypes
 import gdb
+import re
 
 # Allow importing when sourced directly (sos.py adjusts sys.path similarly)
 from abi import *
@@ -1754,32 +1755,210 @@ class GdbServices:
 
     def lldb_disassemble(self, this_ptr, offset, flags, buffer, bufferSize, disSize, endOffset):
         trace("call into lldb_disassemble")
-        # Goal: never hang the caller. Either return one instruction text and advance endOffset,
-        # or return S_FALSE with endOffset advanced so the caller makes progress.
+        # Never hang the caller. Best-effort decode 1 instruction and advance endOffset.
         try:
-            text = None
-            # Try using gdb to disassemble a single instruction at the given address.
             try:
-                # Use x/1i to get one instruction; suppress pagination noise.
-                out = gdb.execute(f"x/1i 0x{int(offset):x}", to_string=True)
-                # Typical format: "0xADDRESS:\tOPCODE ...\n" – strip the leading address
-                if out:
-                    line = out.strip().splitlines()[0]
-                    # Split at first tab or colon space
-                    parts = line.split("\t", 1)
+                trace_cat('disasm', f"[disasm] request addr=0x{int(offset):x}")
+            except Exception:
+                pass
+
+            text = None
+            adv = 1
+            faddr = int(offset)
+            saved_flavor = None
+
+            # Save and temporarily switch to Intel flavor to avoid '%' registers (printf hazards)
+            try:
+                show = gdb.execute("show disassembly-flavor", to_string=True)
+                low = (show or "").lower()
+                if "intel" in low:
+                    saved_flavor = "intel"
+                elif "att" in low:
+                    saved_flavor = "att"
+                else:
+                    saved_flavor = None
+            except Exception:
+                saved_flavor = None
+            try:
+                if saved_flavor != "intel":
+                    gdb.execute("set disassembly-flavor intel", to_string=True)
+            except Exception:
+                pass
+
+            try:
+                # Probe two instructions so we can compute the next address reliably
+                out2 = gdb.execute(f"x/2i 0x{int(offset):x}", to_string=True)
+                lines = [ln for ln in (out2 or '').splitlines() if ln.strip()]
+                if lines:
+                    first = lines[0].strip()
+                    sec = lines[1].strip() if len(lines) > 1 else None
+                    # Extract text for first instruction
+                    parts = first.split('\t', 1)
                     if len(parts) == 2:
                         text = parts[1]
                     else:
-                        # Fallback: after colon
-                        cidx = line.find(":")
-                        text = line[cidx+1:].strip() if cidx >= 0 else line
-            except Exception:
-                text = None
-
-            written = 0
-            if text and buffer and bufferSize and bufferSize > 1:
+                        cidx = first.find(':')
+                        text = first[cidx+1:].strip() if cidx >= 0 else first
+                    # Compute instruction length using numeric addresses
+                    try:
+                        faddr_str = first.split(':', 1)[0].strip()
+                        faddr = int(faddr_str, 16) if faddr_str.startswith('0x') else int(faddr_str, 16)
+                        if sec:
+                            saddr_str = sec.split(':', 1)[0].strip()
+                            saddr = int(saddr_str, 16) if saddr_str.startswith('0x') else int(saddr_str, 16)
+                            if saddr > faddr:
+                                adv = max(1, saddr - faddr)
+                    except Exception:
+                        adv = max(1, adv)
+                else:
+                    # Fallback to a single instruction
+                    out1 = gdb.execute(f"x/1i 0x{int(offset):x}", to_string=True)
+                    if out1:
+                        line = out1.strip().splitlines()[0]
+                        parts = line.split('\t', 1)
+                        if len(parts) == 2:
+                            text = parts[1]
+                        else:
+                            cidx = line.find(':')
+                            text = line[cidx+1:].strip() if cidx >= 0 else line
+            except Exception as ex:
                 try:
-                    bs = text.encode('utf-8', errors='replace')
+                    trace_cat('disasm', f"[disasm] gdb disassemble error: {ex}")
+                except Exception:
+                    pass
+
+            # Restore disassembly flavor if we changed it
+            try:
+                if saved_flavor and saved_flavor != "intel":
+                    gdb.execute(f"set disassembly-flavor {saved_flavor}", to_string=True)
+            except Exception:
+                pass
+
+            # Escape % to avoid downstream printf formatting in SOS
+            if text and ("%" in text):
+                try:
+                    esc = text.replace('%', '%%')
+                    if esc != text:
+                        trace_cat('disasm', "[disasm] escaped percents in text")
+                    text = esc
+                except Exception:
+                    pass
+
+            # Optionally format into LLDB-like columns: address | bytes | mnemonic | operands
+            # Controlled by environment variables (default off):
+            #   SOS_GDB_DISASM_ADDR=1       -> include address column
+            #   SOS_GDB_DISASM_BYTES=1      -> include raw bytes column (contiguous hex)
+            #   SOS_GDB_DISASM_MNEMONIC_COL -> column (1-based) where mnemonic should start (default 39)
+            #   SOS_GDB_DISASM_OPERAND_COL  -> column (1-based) where operands should start (default 50)
+            try:
+                want_addr = (os.getenv('SOS_GDB_DISASM_ADDR', '0') or '0').lower() in ('1','true','yes','on')
+            except Exception:
+                want_addr = False
+            try:
+                want_bytes = (os.getenv('SOS_GDB_DISASM_BYTES', '0') or '0').lower() in ('1','true','yes','on')
+            except Exception:
+                want_bytes = False
+
+            # Canonicalize RIP displacement like "rip+0xfffffffffff85ca7" to "rip - 0x7a359"
+            try:
+                canonical_rip = (os.getenv('SOS_GDB_DISASM_CANONICAL_RIP', '1') or '1').lower() in ('1','true','yes','on')
+            except Exception:
+                canonical_rip = True
+            if text and canonical_rip:
+                try:
+                    pattern = re.compile(r"\brip\s*\+\s*0x([0-9a-fA-F]+)\b")
+                    def _rip_repl(m):
+                        hx = m.group(1)
+                        try:
+                            val = int(hx, 16)
+                            # Treat values > 2^63-1 as negative two's complement and convert to subtract form
+                            if val > 0x7FFFFFFFFFFFFFFF:
+                                delta = (1 << 64) - val
+                                return f"rip - 0x{delta:x}"
+                        except Exception:
+                            pass
+                        return m.group(0)
+                    new_text = pattern.sub(_rip_repl, text)
+                    if new_text != text:
+                        try:
+                            trace_cat('disasm', "[disasm] normalized RIP displacement")
+                        except Exception:
+                            pass
+                        text = new_text
+                except Exception:
+                    pass
+
+            # Compute columns only when prefix requested; otherwise keep plain text
+            out_text = text
+            if text is not None and (want_addr or want_bytes):
+                # Load optional column positions
+                try:
+                    MNEMONIC_COL = max(20, int(os.getenv('SOS_GDB_DISASM_MNEMONIC_COL', '39')))
+                except Exception:
+                    MNEMONIC_COL = 39
+                try:
+                    OPERAND_COL = max(MNEMONIC_COL + 6, int(os.getenv('SOS_GDB_DISASM_OPERAND_COL', '50')))
+                except Exception:
+                    OPERAND_COL = max(MNEMONIC_COL + 6, 50)
+
+                # Address and bytes strings
+                addr_str = f"{faddr:016x}" if want_addr else ""
+                bytes_str = ""
+                if want_bytes and isinstance(faddr, int) and isinstance(adv, int) and adv > 0:
+                    try:
+                        inf = gdb.selected_inferior()
+                        data = bytes(inf.read_memory(faddr, adv)) if inf else b''
+                        if data:
+                            # Contiguous lowercase hex like LLDB (e.g., 4883ec20)
+                            bytes_str = data.hex()
+                    except Exception:
+                        bytes_str = ""
+
+                # Split mnemonic and operands from text
+                mnemonic = text
+                operands = ""
+                try:
+                    parts = text.split(None, 1)
+                    if len(parts) == 2:
+                        mnemonic, operands = parts[0], parts[1]
+                    elif len(parts) == 1:
+                        mnemonic = parts[0]
+                except Exception:
+                    mnemonic, operands = text, ""
+
+                # Build line with alignment
+                line = ""
+                if addr_str:
+                    line += addr_str
+                if bytes_str:
+                    line += (" " if line else "") + bytes_str
+
+                # Pad to mnemonic column
+                if line:
+                    cur_len = len(line)
+                    pad = MNEMONIC_COL - cur_len
+                    if pad < 2:
+                        pad = 2
+                    line += " " * pad
+
+                # Add mnemonic
+                line += mnemonic
+
+                # Pad to operands column (only if we have operands)
+                if operands:
+                    cur_len2 = len(line)
+                    pad2 = OPERAND_COL - cur_len2
+                    if pad2 < 1:
+                        pad2 = 1
+                    line += " " * pad2 + operands
+
+                out_text = line
+
+            # Write text to caller's buffer
+            written = 0
+            try:
+                if out_text and buffer and bufferSize and bufferSize > 1:
+                    bs = out_text.encode('utf-8', errors='replace')
                     n = min(len(bs), max(0, int(bufferSize) - 1))
                     if n > 0:
                         dst = buffer if isinstance(buffer, int) else ctypes.cast(buffer, ctypes.c_void_p).value
@@ -1787,31 +1966,34 @@ class GdbServices:
                             ctypes.memmove(dst, bs, n)
                             ctypes.memmove(dst + n, b"\x00", 1)
                             written = n
-                except Exception:
-                    written = 0
+            except Exception:
+                written = 0
 
             if disSize:
-                disSize.contents.value = written
+                try:
+                    disSize.contents.value = written
+                except Exception:
+                    pass
+            if endOffset:
+                try:
+                    endOffset.contents.value = ctypes.c_uint64(int(offset) + max(1, int(adv))).value
+                except Exception:
+                    pass
 
-            # Always advance by at least 1 byte to ensure forward progress if we can't decode size.
-            adv = 1
+            rc = 0 if written > 0 else 1
             try:
-                # Try to infer instruction size by looking up next address from gdb output
-                # Not always available; keep minimal advancement.
-                pass
+                trace_cat('disasm', f"[disasm] wrote={written} adv={adv} rc={rc}")
             except Exception:
                 pass
-            if endOffset:
-                endOffset.contents.value = ctypes.c_uint64(int(offset) + adv).value
-            # Return S_OK if we wrote text, otherwise S_FALSE
-            return 0 if written > 0 else 1
-        except Exception:
+            return rc
+        except Exception as ex:
             # On any error, indicate no text but still advance to avoid infinite loops.
             try:
                 if disSize:
                     disSize.contents.value = 0
                 if endOffset:
                     endOffset.contents.value = ctypes.c_uint64(int(offset) + 1).value
+                trace_cat('disasm', f"[disasm] exception: {ex}")
             except Exception:
                 pass
             return 1
@@ -1969,7 +2151,149 @@ class GdbServices:
 
     def lldb_get_line_by_offset(self, this_ptr, offset, line, fileBuffer, fileBufferSize, fileSize, displacement):
         trace("call into lldb_get_line_by_offset")
-        return 0x80004001
+        # Contract:
+        # - offset: code address (absolute)
+        # - line: out ULONG* (line number)
+        # - fileBuffer: out char* (file path UTF-8)
+        # - fileBufferSize: in ULONG (capacity)
+        # - fileSize: out ULONG* (required length including NUL)
+        # - displacement: out ULONG64* (delta between 'offset' and start of line mapping)
+        # Return 0 (S_OK) on success, E_FAIL on not found or errors, but keep outputs consistent.
+        # Implementation: use GDB 'info line *ADDR' and parse. Examples:
+        #   Line 42 of "foo.cs" starts at address 0x7f... <...> and ends at 0x7f...
+        #   No line information available for address 0x...
+        try:
+            addr = int(offset)
+        except Exception:
+            addr = 0
+        # Initialize outputs to safe defaults
+        try:
+            if line:
+                line.contents.value = 0
+        except Exception:
+            pass
+        try:
+            if fileSize:
+                fileSize.contents.value = 0
+        except Exception:
+            pass
+        try:
+            if displacement:
+                displacement.contents.value = 0
+        except Exception:
+            pass
+
+        if not addr:
+            return 0x80004005
+
+        text = None
+        try:
+            text = gdb.execute(f"info line *0x{addr:x}", to_string=True) or ""
+        except Exception as ex:
+            try:
+                trace_cat('disasm', f"[line] gdb info line error: {ex}")
+            except Exception:
+                pass
+            text = ""
+
+        # Parse for file, line, and start address
+        src_file = None
+        src_line = 0
+        start_addr = None
+        try:
+            s = text.strip()
+            if s and s.lower().startswith('line') and ' starts at address ' in s:
+                # Try a robust parse without strict regex to handle variations
+                # Expected pattern: Line <num> of "<file>" starts at address 0x<start> ...
+                # Find 'Line ' and following number
+                try:
+                    after_line = s[5:].lstrip()  # after 'Line '
+                    num_str = ''
+                    i = 0
+                    while i < len(after_line) and after_line[i].isdigit():
+                        num_str += after_line[i]
+                        i += 1
+                    if num_str:
+                        src_line = int(num_str)
+                except Exception:
+                    src_line = 0
+                # Find quoted file name
+                try:
+                    q1 = s.find('"')
+                    if q1 >= 0:
+                        q2 = s.find('"', q1 + 1)
+                        if q2 > q1:
+                            src_file = s[q1+1:q2]
+                except Exception:
+                    src_file = None
+                # Find 'starts at address 0x...'
+                try:
+                    key = 'starts at address '
+                    k = s.find(key)
+                    if k >= 0:
+                        rest = s[k + len(key):].split()[0]
+                        if rest.startswith('0x'):
+                            start_addr = int(rest, 16)
+                except Exception:
+                    start_addr = None
+        except Exception:
+            pass
+
+        if not src_file or not src_line or start_addr is None:
+            try:
+                trace_cat('disasm', f"[line] no mapping for 0x{addr:x}; raw='{(text or '').strip()[:120]}'")
+            except Exception:
+                pass
+            return 0x80004005
+
+        # Fill outputs
+        try:
+            if line:
+                line.contents.value = int(src_line)
+        except Exception:
+            pass
+        disp_val = 0
+        try:
+            if start_addr is not None and addr >= start_addr:
+                disp_val = addr - start_addr
+        except Exception:
+            disp_val = 0
+        try:
+            if displacement:
+                displacement.contents.value = ctypes.c_uint64(disp_val).value
+        except Exception:
+            pass
+
+        # File buffer handling (UTF-8)
+        file_bytes = b""
+        try:
+            file_bytes = (src_file or '').encode('utf-8', errors='replace')
+        except Exception:
+            file_bytes = b""
+        try:
+            if fileSize:
+                fileSize.contents.value = len(file_bytes) + 1
+        except Exception:
+            pass
+        try:
+            if fileBuffer and fileBufferSize and fileBufferSize > 0:
+                dst = fileBuffer if isinstance(fileBuffer, int) else ctypes.cast(fileBuffer, ctypes.c_void_p).value
+                if dst:
+                    n = min(len(file_bytes), max(0, int(fileBufferSize) - 1))
+                    if n > 0:
+                        ctypes.memmove(dst, file_bytes, n)
+                    ctypes.memmove(dst + n, b"\x00", 1)
+        except Exception as ex:
+            try:
+                trace_cat('disasm', f"[line] fileBuffer write error: {ex}")
+            except Exception:
+                pass
+
+        try:
+            trace_cat('disasm', f"[line] 0x{addr:x} -> {src_file}:{src_line} +0x{disp_val:x}")
+        except Exception:
+            pass
+        return 0
 
     def lldb_get_source_file_line_offsets(self, this_ptr, file, buffer, bufferLines, fileLines):
         trace("call into lldb_get_source_file_line_offsets")
@@ -2005,8 +2329,8 @@ class GdbServices:
 
     def lldb_set_current_thread_id(self, this_ptr, id_value):
         trace("call into lldb_set_current_thread_id")
-        threads = self._get_threads()
         try:
+            threads = self._get_threads()
             if 0 <= id_value < len(threads):
                 threads[id_value].switch()
                 self._current_thread_sysid = self._thread_sysid(threads[id_value])
