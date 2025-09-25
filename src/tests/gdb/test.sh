@@ -7,7 +7,33 @@ LOGDIR="${SCRIPT_DIR}/logs"
 mkdir -p "${LOGDIR}"
 
 GDB_BIN=${GDB_BIN:-gdb}
-PLUGIN_PATH=${PLUGIN_PATH:-"/workspaces/gdbsos/src/diagnostics/artifacts/bin/current/sos.py"}
+
+# Allow caller to specify CONFIG (Debug/Release); default to Debug
+CONFIG=${CONFIG:-Debug}
+
+# Resolve repository root (three levels up from this script: src/tests/gdb)
+REPO_ROOT=$(cd "${SCRIPT_DIR}/../../../" && pwd)
+
+# If PLUGIN_PATH not provided, attempt to auto-detect sos.py in publish folders
+if [[ -z "${PLUGIN_PATH:-}" ]]; then
+  CANDIDATES=(
+    "${REPO_ROOT}/artifacts/bin/linux.x64.${CONFIG}/sos.py"
+    "${REPO_ROOT}/artifacts/bin/linux.x64.Debug/sos.py"
+    "${REPO_ROOT}/artifacts/bin/linux.x64.Release/sos.py"
+  )
+  for c in "${CANDIDATES[@]}"; do
+    if [[ -f "$c" ]]; then
+      PLUGIN_PATH="$c"
+      break
+    fi
+  done
+fi
+
+if [[ -z "${PLUGIN_PATH:-}" ]]; then
+  echo "ERROR: Unable to locate sos.py in artifacts/bin/linux.x64.[Debug|Release]. Set PLUGIN_PATH explicitly." >&2
+  exit 1
+fi
+
 HOST_BIN=${HOST_BIN:-"$(command -v dotnet)"}
 ASSEMBLY=${ASSEMBLY:-"/path/to/TestDebuggee.dll"}
 TIMEOUT=${TIMEOUT:-120}

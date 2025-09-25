@@ -1,43 +1,88 @@
-GDB SOS plugin tests
-====================
+# SOS GDB Test Harness
 
-This folder contains a lightweight, LLDB-inspired test harness for the GDB SOS plugin.
+Lightweight GDB scenario tests for the SOS GDB Python plugin.
 
-What it does
-- Spawns GDB in batch mode per test scenario.
-- Sources the deployed plugin (`src/diagnostics/artifacts/bin/current/sos.py`).
-- Launches a managed debuggee via a host (e.g., `dotnet`) and an assembly (e.g., `TestDebuggee.dll`).
-- Runs scenario scripts that execute SOS commands and assert on output.
-- Writes a summary report and per-test logs.
+## Plugin Discovery (Updated)
+`sos.py` moved out of the diagnostics submodule; the harness now auto-detects it in published artifact folders.
 
-Prerequisites
-- GDB with Python support (the `python` command works inside GDB).
-- A .NET host (e.g., `dotnet` or `corerun`) and a managed test assembly that loads CoreCLR.
-- The plugin must work in your environment (symbols/runtimes discoverable).
+When `PLUGIN_PATH` is not set, `test.sh` searches in order:
+1. `artifacts/bin/linux.x64.$CONFIG/sos.py` (with `CONFIG` env var; default `Debug`)
+2. `artifacts/bin/linux.x64.Debug/sos.py`
+3. `artifacts/bin/linux.x64.Release/sos.py`
 
-Layout
-- `test_gdbsos.py` — outer runner that spawns GDB and coordinates tests.
-- `gdbtestutils.py` — utilities imported inside the GDB process (asserts, run(), helpers).
-- `scenarios/` — per-command scenario modules with `runScenario(assemblyName)`.
-- `logs/` — per-test stdout/stderr logs (created at runtime).
+If none found, the script exits with an error instructing you to set `PLUGIN_PATH` explicitly.
 
-Quick start
-1) Create a logs directory:
-   mkdir -p tests/gdb/logs
+## Files
+| File | Purpose |
+|------|---------|
+| `test.sh` | Shell front-end: resolves plugin path, invokes harness. |
+| `test_gdbsos.py` | Discovers scenarios, launches GDB per scenario, aggregates results. |
+| `gdbtestutils.py` | Assertions and helper functions executed inside GDB Python. |
+| `scenarios/` | Scenario modules (`t_cmd_*.py`) exercising specific SOS commands. |
+| `logs/` | Generated runtime logs and summary file. |
 
-2) Run tests by specifying the host and assembly:
-   python3 tests/gdb/test_gdbsos.py \
-     --gdb gdb \
-   --plugin /workspaces/gdbsos/src/diagnostics/artifacts/bin/current/sos.py \
-     --host "$(command -v dotnet)" \
-     --assembly /path/to/TestDebuggee.dll \
-     --logdir tests/gdb/logs \
-     --timeout 120 \
-     --regex t_cmd_
+## Key Environment Variables
+| Var | Description | Default |
+|-----|-------------|---------|
+| `CONFIG` | Build configuration (`Debug` or `Release`). | `Debug` |
+| `PLUGIN_PATH` | Explicit `sos.py` path (skip auto-detect). | (auto) |
+| `ASSEMBLY` | Managed test debuggee DLL (must load CoreCLR). | (required) |
+| `GDB_BIN` | GDB executable. | `gdb` |
+| `HOST_BIN` | .NET host (e.g. `dotnet`). | `which dotnet` |
+| `REGEX` | Scenario filename regex. | `t_cmd_.*\\.py` |
+| `TIMEOUT` | Per-scenario timeout (seconds). | `120` |
+| `REPEAT` | Number of passes over scenarios. | `1` |
 
-Notes
-- The harness sets a pending breakpoint on `coreclr_execute_assembly` and then runs the target.
-- Scenarios assume the CLR is present at that stop. Our plugin lazily initializes hosting when the CLR is loaded.
-- If you don’t have `dotnet`, you can use another CoreCLR host (`corerun`) that can launch the assembly.
-- If your app is single-file or self-contained, ensure it still loads `libcoreclr.so` such that SOS can attach and function.
-- The `current` directory is a symlink to the platform/config folder (e.g., `linux.x64.Release`). Ensure `libsos.so` and `libsosgdbbridge.so` are present there.
+## Typical Runs
+```bash
+# Debug build (auto-detects artifacts/bin/linux.x64.Debug/sos.py)
+CONFIG=Debug \
+ASSEMBLY=src/diagnostics/artifacts/bin/SimpleThrow/Debug/net10.0/SimpleThrow.dll \
+bash src/tests/gdb/test.sh
+
+# Release build
+CONFIG=Release \
+ASSEMBLY=src/diagnostics/artifacts/bin/SimpleThrow/Release/net10.0/SimpleThrow.dll \
+bash src/tests/gdb/test.sh
+
+# Explicit override
+PLUGIN_PATH=artifacts/bin/linux.x64.Debug/sos.py \
+ASSEMBLY=src/diagnostics/artifacts/bin/SimpleThrow/Debug/net10.0/SimpleThrow.dll \
+bash src/tests/gdb/test.sh
+```
+
+## Scenario Flow
+Each scenario:
+1. Starts GDB in batch mode.
+2. Sources the plugin (`sos.py`).
+3. Launches the managed target via the host runtime.
+4. Breaks into managed code (`bpmd_and_continue`).
+5. Executes SOS commands and asserts output via helpers (e.g. `expect_contains`).
+
+## Results & Logs
+* Per-scenario log: `logs/<scenario>.log`
+* Aggregated summary: `logs/summary`
+* Success requires removing `fail_flag` and creating `fail_flag.gdb`.
+
+Result meanings:
+* Success: ≥1 assertion passed, none failed.
+* Fail: At least one assertion failed.
+* Timeout: Scenario exceeded `TIMEOUT`.
+* Crash: Harness did not mark completion.
+* Please, report: No assertions executed; investigate scenario/harness.
+
+## Adding a Scenario
+Create `scenarios/t_cmd_newfeature.py`:
+```python
+from gdbtestutils import bpmd_and_continue, expect_contains
+
+def run():
+    bpmd_and_continue('MyAssembly!MyType.MyMethod')
+    expect_contains('clrstack', 'MyType.MyMethod')
+```
+
+## Rationale
+Centralizing plugin discovery in the publish artifacts mirrors end-user usage and avoids stale paths under the diagnostics submodule. It also ensures tests track the exact built output (co-located bridge + plugin).
+
+---
+Update this README if publish layout or discovery policy changes.

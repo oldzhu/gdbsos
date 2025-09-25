@@ -170,7 +170,21 @@ def generate_report(summary_file):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gdb', default='gdb')
-    parser.add_argument('--plugin', default=os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src/diagnostics/artifacts/bin/current/sos.py')))
+    # Default plugin path now points to repository-level publish artifacts. We try Debug first, then Release.
+    _script_dir = os.path.dirname(__file__)
+    _repo_root = os.path.abspath(os.path.join(_script_dir, '../../..'))
+    _default_plugin = None
+    for _cand in [
+        os.path.join(_repo_root, 'artifacts', 'bin', 'linux.x64.Debug', 'sos.py'),
+        os.path.join(_repo_root, 'artifacts', 'bin', 'linux.x64.Release', 'sos.py'),
+    ]:
+        if os.path.isfile(_cand):
+            _default_plugin = _cand
+            break
+    if _default_plugin is None:
+        # Fallback to previous (likely stale) path so error message in logs is explanatory
+        _default_plugin = os.path.abspath(os.path.join(_script_dir, '../../src/diagnostics/artifacts/bin/current/sos.py'))
+    parser.add_argument('--plugin', default=_default_plugin)
     parser.add_argument('--host', required=True)
     parser.add_argument('--assembly', required=True)
     parser.add_argument('--logdir', default=os.path.join(os.path.dirname(__file__), 'logs'))
