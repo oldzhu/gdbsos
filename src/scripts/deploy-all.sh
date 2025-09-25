@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# OBSOLETE (2025-09-25): This deployment script is no longer required.
+# We changed the way SOS is located: libsos.so is discovered via $SOS_ROOT or ~/.dotnet/sos,
+# and our GDB bridge (libsosgdbbridge.so) is expected to live next to the Python files.
+# Keeping this file for reference only. Consider removing execute permission:
+#   chmod -x src/scripts/deploy-all.sh
+#
+# Previous behavior (historical):
 # Copy the built libsosgdbbridge.so and Python plugin files next to diagnostics' libsos.so for testing/usage
 # Usage:
 #   scripts/deploy-bridge.sh [-c Debug|Release] [-a x64|arm64|arm] [-d <diagnostics bin dir>]
