@@ -4,26 +4,29 @@ set -euo pipefail
 # gdbsos build orchestrator
 # 1) Builds the diagnostics submodule
 # 2) Builds and installs the gdb bridge into artifacts/bin/linux.<arch>.<Config>
+#
+# NOTE (2025-09-25): Deployment to the diagnostics bin directory (next to libsos.so)
+# is obsolete. The Python plugin now locates libsos via $SOS_ROOT or ~/.dotnet/sos,
+# and the bridge (libsosgdbbridge.so) is expected to be co-located with the Python files.
+# Any deploy-to-diagnostics options are retained for backwards compatibility but are no-ops.
 
 CONFIG="Release"
 JOBS="$(nproc)"
 PASS_TO_DIAG=()
 SKIP_DIAG=0
 DO_PACKAGE=0
-# Default: deploy bridge next to diagnostics' libsos.so unless explicitly disabled
-DEPLOY_TO_DIAG=1
+# Deprecated: deploy-to-diagnostics is no longer needed (see note above)
+DEPLOY_TO_DIAG=0
 DEPLOY_DIR=""
 
 print_help() {
   cat <<EOF
-Usage: $0 [-c Debug|Release] [--skip-diagnostics] [--package] [--no-deploy-to-diagnostics] [--deploy-dir <path>] [-- <diagnostics build.sh args...>]
+Usage: $0 [-c Debug|Release] [--skip-diagnostics] [--package] [-- <diagnostics build.sh args...>]
 Examples:
   $0 -c Release
   $0 -c Debug -- -skipmanaged
   $0 -c Release --skip-diagnostics --package
-  $0 -c Release  # deploys to diagnostics by default
-  $0 -c Release --no-deploy-to-diagnostics
-  $0 -c Release --deploy-dir /path/to/diagnostics/artifacts/bin/current
+  $0 -c Release
 EOF
 }
 
@@ -36,11 +39,11 @@ while [[ $# -gt 0 ]]; do
     --package)
       DO_PACKAGE=1; shift;;
     --deploy-to-diagnostics)
-      DEPLOY_TO_DIAG=1; shift;;
+      echo "[note] --deploy-to-diagnostics is deprecated and ignored (no-op)." >&2; shift;;
     --no-deploy-to-diagnostics)
-      DEPLOY_TO_DIAG=0; shift;;
+      echo "[note] --no-deploy-to-diagnostics is deprecated and ignored (no-op)." >&2; shift;;
     --deploy-dir)
-      DEPLOY_DIR="${2:-}"; shift 2;;
+      echo "[note] --deploy-dir is deprecated and ignored (no-op)." >&2; shift 2;;
     -h|--help)
       print_help; exit 0;;
     --)
@@ -161,13 +164,13 @@ CM_ARGS+=( -DEXTENSIONS_LIB="${EXT_LIB}" )
 if [[ ${#PREFER_CLANG_ARGS[@]} -gt 0 ]]; then
   CM_ARGS+=( "${PREFER_CLANG_ARGS[@]}" )
 fi
-# Optional: also deploy the bridge into diagnostics bin
-if [[ ${DEPLOY_TO_DIAG} -eq 1 ]]; then
-  CM_ARGS+=( -DBRIDGE_DEPLOY_TO_DIAGNOSTICS=ON )
-  if [[ -n "${DEPLOY_DIR}" ]]; then
-    CM_ARGS+=( -DBRIDGE_DEPLOY_DIAG_DIR="${DEPLOY_DIR}" )
-  fi
-fi
+# Deprecated: deploy-to-diagnostics (kept for reference; no-op)
+# if [[ ${DEPLOY_TO_DIAG} -eq 1 ]]; then
+#   CM_ARGS+=( -DBRIDGE_DEPLOY_TO_DIAGNOSTICS=ON )
+#   if [[ -n "${DEPLOY_DIR}" ]]; then
+#     CM_ARGS+=( -DBRIDGE_DEPLOY_DIAG_DIR="${DEPLOY_DIR}" )
+#   fi
+# fi
 cmake "${CM_ARGS[@]}"
 
 echo "==> Building bridge"

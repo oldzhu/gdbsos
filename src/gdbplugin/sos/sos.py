@@ -3,6 +3,7 @@ import ctypes
 import os
 import sys
 import re
+import shutil
 from typing import Optional
 
 # Ensure this directory is absolute and on sys.path for sibling module imports
@@ -30,9 +31,136 @@ from services import GdbServices
 from tracing import TRACE_ENABLED, SOSTraceCommand, trace_cat
 
 def _find_libsos() -> Optional[str]:
-    """Locate libsos.so co-located with this script (same directory)."""
-    p = os.path.join(_THIS_DIR, "libsos.so")
-    return p if os.path.exists(p) else None
+    """Locate libsos.so using a flexible search order:
+    1) $SOS_ROOT/libsos.so if SOS_ROOT is set
+    2) ~/.dotnet/sos/libsos.so (default dotnet-sos install location)
+    3) Same directory as this script (legacy co-location)
+    Returns the first existing path or None.
+    """
+    candidates = []
+    try:
+        sos_root = os.environ.get("SOS_ROOT")
+        if sos_root:
+            candidates.append(os.path.join(sos_root, "libsos.so"))
+    except Exception:
+        pass
+    try:
+        home = os.path.expanduser("~")
+        if home and home != "~":
+            candidates.append(os.path.join(home, ".dotnet", "sos", "libsos.so"))
+    except Exception:
+        pass
+    candidates.append(os.path.join(_THIS_DIR, "libsos.so"))
+    for p in candidates:
+        try:
+            if p and os.path.exists(p):
+                return p
+        except Exception:
+            continue
+    return None
+
+def _ensure_bridge_colocated(libsos_path: str) -> Optional[str]:
+    """Ensure libsosgdbbridge.so is co-located with libsos.so.
+
+    Policy (formalized after investigation):
+    Hosting initialization (InitManagedHosting / SOSInitializeByHost) succeeds reliably only
+    when the native bridge and libsos.so reside in the same directory. We therefore always
+    load (and if necessary stage) the bridge next to libsos.so, regardless of where the
+    Python plugin itself lives.
+
+    Steps:
+      1. Determine libsos directory.
+      2. If libsosgdbbridge.so already exists there, use it.
+      3. Else if a bridge is present in the plugin directory, copy it there (best-effort).
+      4. Return the path to the bridge to load (or None if unavailable).
+
+    We intentionally DO NOT provide an environment override to revert to the legacy
+    non-co-located behavior because that produced confusing hosting failures (HRESULT 0x80070002).
+    """
+    try:
+        libsos_dir = os.path.dirname(libsos_path or "")
+        if not libsos_dir:
+            return None
+        bridge_target = os.path.join(libsos_dir, "libsosgdbbridge.so")
+        if os.path.exists(bridge_target):
+            return bridge_target
+        # Source candidate in plugin directory
+        source_bridge = os.path.join(_THIS_DIR, "libsosgdbbridge.so")
+        if os.path.exists(source_bridge):
+            try:
+                if TRACE_ENABLED:
+                    gdb.write(f"[sos] Staging bridge into '{bridge_target}' (co-location policy)\n")
+                os.makedirs(libsos_dir, exist_ok=True)
+                # Only copy if different (size/mtime heuristic)
+                do_copy = True
+                try:
+                    if os.path.exists(bridge_target):
+                        s_src = os.stat(source_bridge)
+                        s_dst = os.stat(bridge_target)
+                        if s_src.st_size == s_dst.st_size and int(s_src.st_mtime) == int(s_dst.st_mtime):
+                            do_copy = False
+                except Exception:
+                    pass
+                if do_copy:
+                    shutil.copy2(source_bridge, bridge_target)
+                return bridge_target if os.path.exists(bridge_target) else None
+            except Exception as ex:
+                if TRACE_ENABLED:
+                    gdb.write(f"[sos] Bridge staging note: {ex}\n")
+                # Fall through; we'll attempt to load the source directly if possible
+        # As a last resort, allow direct load from plugin dir if staging failed and libsos dir is read-only.
+        if os.path.exists(source_bridge):
+            if TRACE_ENABLED:
+                gdb.write("[sos][warn] Using non-co-located bridge (staging failed). Hosting may be unreliable.\n")
+            return source_bridge
+    except Exception as e:
+        if TRACE_ENABLED:
+            gdb.write(f"[sos] _ensure_bridge_colocated exception: {e}\n")
+    return None
+
+# Commands whose first argument is typically a pointer/address. We will normalize a pure
+# hex value without a 0x prefix to add the prefix (LLDB accepts both forms; some SOS exports
+# require the 0x). This improves parity so users can paste addresses directly from logs.
+_ADDRESS_FIRST_ARG_CMDS = {
+    'dumpobj', 'dumpmt', 'dumpclass', 'dumpmd', 'dumpvc', 'ip2md', 'gcroot', 'gcwhere',
+    'printexception', 'pe', 'dumpdelegate', 'dumparray'
+}
+
+_HEX_CHARS = set('0123456789abcdefABCDEF')
+
+def _normalize_address_token(cmd: str, arg: str) -> str:
+    """If cmd expects an address first and arg's first token looks like a raw hex pointer
+    without 0x, prefix it. Heuristic: token is all hex chars and either (a) contains any a-f
+    letter OR (b) length > 8 (likely a full pointer) OR (c) user set SOS_GDB_FORCE_HEX=1.
+    Avoid converting small purely decimal numbers which the user may intend as decimal.
+    """
+    try:
+        if not arg or cmd not in _ADDRESS_FIRST_ARG_CMDS:
+            return arg
+        parts = arg.strip().split(None, 1)
+        if not parts:
+            return arg
+        first = parts[0]
+        if first.startswith(('0x','0X')):
+            return arg  # already normalized
+        # Skip if has non-hex chars
+        if not all(c in _HEX_CHARS for c in first):
+            return arg
+        force = os.environ.get('SOS_GDB_FORCE_HEX') in ('1','true','TRUE','True')
+        looks_hex = any(c in 'abcdefABCDEF' for c in first) or len(first) > 8 or force
+        if not looks_hex:
+            return arg
+        norm_first = '0x' + first
+        rest = parts[1] if len(parts) > 1 else ''
+        new_arg = (norm_first + (' ' + rest if rest else ''))
+        if TRACE_ENABLED:
+            try:
+                gdb.write(f"[sos] normalized address arg for {cmd}: '{first}' -> '{norm_first}'\n")
+            except Exception:
+                pass
+        return new_arg
+    except Exception:
+        return arg
 
 # Try to detect a suitable .NET runtime directory for hosting (directory containing libcoreclr.so)
 ## removed auto runtime detection for troubleshooting
@@ -314,28 +442,30 @@ class SOSCommand(gdb.Command):
             return True
 
         try:
-            # Load the bridge first from the same directory as this script
-            if TRACE_ENABLED:
-                gdb.write("[sos] Probing for libsosgdbbridge.so...\n")
+            # Discover libsos using SOS_ROOT, ~/.dotnet/sos or plugin co-location
             _dl_mode = getattr(ctypes, 'RTLD_GLOBAL', None)
-            SOSCommand.bridge_handle = None
-            try:
-                local_bridge = os.path.join(_THIS_DIR, "libsosgdbbridge.so")
-                if os.path.exists(local_bridge):
-                    if TRACE_ENABLED:
-                        gdb.write(f"[sos] Loading bridge from '{local_bridge}'...\n")
-                    SOSCommand.bridge_handle = ctypes.CDLL(local_bridge, mode=_dl_mode) if _dl_mode is not None else ctypes.CDLL(local_bridge)
-            except Exception as e:
-                SOSCommand.bridge_handle = None
-                if TRACE_ENABLED:
-                    gdb.write(f"[sos] Bridge load note: {e}\n")
-
-            # Discover libsos strictly co-located with this script
             libsos_path = _find_libsos()
             if not libsos_path:
                 gdb.write("Error: Unable to locate libsos.so.\n")
-                gdb.write("Hint: copy libsos.so next to sos.py (diagnostics/artifacts/bin/current).\n")
+                gdb.write("Search paths tried: $SOS_ROOT/libsos.so, ~/.dotnet/sos/libsos.so, and the folder containing sos.py.\n")
+                gdb.write("Install dotnet-sos or set SOS_ROOT to your SOS install directory.\n")
+                gdb.write("Docs: https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-sos\n")
                 return False
+
+            # Formalized co-location: always stage/load bridge from libsos directory
+            bridge_path = _ensure_bridge_colocated(libsos_path)
+            SOSCommand.bridge_handle = None
+            if bridge_path and os.path.exists(bridge_path):
+                try:
+                    if TRACE_ENABLED:
+                        gdb.write(f"[sos] Loading bridge from '{bridge_path}' (co-location enforced)\n")
+                    SOSCommand.bridge_handle = ctypes.CDLL(bridge_path, mode=_dl_mode) if _dl_mode is not None else ctypes.CDLL(bridge_path)
+                except Exception as bex:
+                    if TRACE_ENABLED:
+                        gdb.write(f"[sos] Bridge load note: {bex}\n")
+            else:
+                if TRACE_ENABLED:
+                    gdb.write("[sos][warn] No bridge binary available after co-location attempt; proceeding without native host.\n")
 
             if TRACE_ENABLED:
                 gdb.write(f"[sos] Loading libsos from '{libsos_path}'...\n")
@@ -685,6 +815,12 @@ class SOSCommand(gdb.Command):
             # Prefer native exports first to avoid managed noise like "Unrecognized SOS command".
             # Resolve the exported SOS symbol for this command
 
+            # Opportunistically normalize first argument if this command typically expects an address
+            try:
+                arg = _normalize_address_token(lower_name, arg)
+            except Exception:
+                pass
+
             sos_func = None
             tried = []
             for sym in _to_export_candidates_common(lower_name):
@@ -919,6 +1055,11 @@ class SosExecUmbrellaCommand(gdb.Command):
             return
         name = parts[0].lower()
         rest = parts[1] if len(parts) > 1 else ""
+        # Normalize address-like first token for parity with LLDB (accept raw hex without 0x)
+        try:
+            rest = _normalize_address_token(name, rest)
+        except Exception:
+            pass
         # Clear any prior user-interrupt state at the beginning of an umbrella dispatch
         try:
             if hasattr(SOSCommand, 'gdb_services') and SOSCommand.gdb_services is not None:

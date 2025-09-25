@@ -6,8 +6,9 @@ gdbsos — GDB SOS plugin
 
 Usage
 - Build diagnostics, then build the bridge.
-- Co-location required: libsosgdbbridge.so must be next to diagnostics' libsos.so.
-- In GDB: source /path/to/src/diagnostics/artifacts/bin/current/sos.py to register commands.
+- libsos.so discovery: at runtime we search (in order): $SOS_ROOT/libsos.so, ~/.dotnet/sos/libsos.so, then the directory containing sos.py.
+- Bridge co-location policy: regardless of where sos.py resides, when libsos.so is found in another directory we stage (copy if necessary) and always load libsosgdbbridge.so from the same directory as libsos.so. This is required for reliable managed hosting (prevents hosting delegate 0x80070002 failures). No override is provided to revert the legacy separated layout.
+- In GDB: source /path/to/sos.py to register commands.
 
 Help and commands
 - New: prefix command 'sos' with subcommands. Try:
@@ -28,11 +29,6 @@ Dev Container
 	- ./build.sh -c Release
 
 Deploy options
-- Quick deploy for testing:
-	- scripts/deploy-all.sh [-c Debug|Release] [-a arch] [-d <diagnostics bin dir>]
-  Copies libsosgdbbridge.so next to diagnostics' libsos.so.
-- Build-time deploy:
-	- ./build.sh -c Release --deploy-to-diagnostics [--deploy-dir <path>]
-  Passes -DBRIDGE_DEPLOY_TO_DIAGNOSTICS=ON (and optional target dir) to CMake.
+- Obsolete: historical deploy helpers that copied the bridge and Python files into the diagnostics artifacts/bin tree have been deprecated. The build no longer deploys to diagnostics; related CMake/script logic is commented out. Rely on SOS_ROOT or ~/.dotnet/sos for libsos.so; the runtime automatically co-locates the bridge with libsos when needed.
 
 For troubleshooting and FAQs, see `docs/faq.md`.

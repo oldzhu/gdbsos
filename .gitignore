@@ -12,3 +12,9 @@ CMakeCache.txt
 *.so
 *.a
 .vscode/
+
+# backups
+src/backup-2025-09-24/
+
+# test logs
+src/tests/gdb/logs/
