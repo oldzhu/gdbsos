@@ -35,6 +35,22 @@ if [[ -z "${PLUGIN_PATH:-}" ]]; then
 fi
 
 HOST_BIN=${HOST_BIN:-"$(command -v dotnet)"}
+
+# Auto-detect TestDebuggee assembly if ASSEMBLY not explicitly provided.
+if [[ -z "${ASSEMBLY:-}" ]]; then
+  TESTDBG_CANDIDATES=(
+    "${REPO_ROOT}/src/diagnostics/artifacts/bin/TestDebuggee/${CONFIG}/net8.0/TestDebuggee.dll"
+    "${REPO_ROOT}/src/diagnostics/artifacts/bin/TestDebuggee/Debug/net8.0/TestDebuggee.dll"
+    "${REPO_ROOT}/src/diagnostics/artifacts/bin/TestDebuggee/Release/net8.0/TestDebuggee.dll"
+  )
+  for a in "${TESTDBG_CANDIDATES[@]}"; do
+    if [[ -f "$a" ]]; then
+      ASSEMBLY="$a"
+      break
+    fi
+  done
+fi
+
 ASSEMBLY=${ASSEMBLY:-"/path/to/TestDebuggee.dll"}
 TIMEOUT=${TIMEOUT:-120}
 REGEX=${REGEX:-'t_cmd_.*\.py'}
