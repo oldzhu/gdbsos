@@ -8,6 +8,10 @@ mkdir -p "${LOGDIR}"
 
 GDB_BIN=${GDB_BIN:-gdb}
 
+# Ensure JIT memory protections are compatible with bpmd/JIT breakpoints under test.
+# Mirrors manual testing instructions where users export this before invoking gdb.
+export DOTNET_EnableWriteXorExecute=${DOTNET_EnableWriteXorExecute:-0}
+
 # Allow caller to specify CONFIG (Debug/Release); default to Debug
 CONFIG=${CONFIG:-Debug}
 
