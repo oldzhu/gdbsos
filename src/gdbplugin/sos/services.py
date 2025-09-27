@@ -1522,9 +1522,7 @@ class GdbServices:
 
                         def stop(bp_self):
                             try:
-                                # Reduce early noise before runtime has loaded
-                                if not getattr(services_self, '_runtime_loaded_fired', False):
-                                    return False
+                                # Assume runtime is already loaded when exception callback is registered
                                 if not getattr(services_self, '_exception_cb', None):
                                     return False
                                 ETYPE = ctypes.CFUNCTYPE(HRESULT, ctypes.c_void_p)
@@ -1851,13 +1849,15 @@ class GdbServices:
             #   SOS_GDB_DISASM_MNEMONIC_COL -> column (1-based) where mnemonic should start (default 39)
             #   SOS_GDB_DISASM_OPERAND_COL  -> column (1-based) where operands should start (default 50)
             try:
-                want_addr = (os.getenv('SOS_GDB_DISASM_ADDR', '0') or '0').lower() in ('1','true','yes','on')
+                want_addr = (os.getenv('SOS_GDB_DISASM_ADDR', '1') or '1').lower() in ('1','true','yes','on')
             except Exception:
-                want_addr = False
+                # Default to enabled if env read fails
+                want_addr = True
             try:
-                want_bytes = (os.getenv('SOS_GDB_DISASM_BYTES', '0') or '0').lower() in ('1','true','yes','on')
+                want_bytes = (os.getenv('SOS_GDB_DISASM_BYTES', '1') or '1').lower() in ('1','true','yes','on')
             except Exception:
-                want_bytes = False
+                # Default to enabled if env read fails
+                want_bytes = True
 
             # Canonicalize RIP displacement like "rip+0xfffffffffff85ca7" to "rip - 0x7a359"
             try:
@@ -2185,6 +2185,63 @@ class GdbServices:
 
         if not addr:
             return 0x80004005
+
+        # First try managed-aware mapping via bridge helper (DAC + ISymbolService)
+        try:
+            bridge_fn = getattr(self, '_bridge_get_line', None)
+        except Exception:
+            bridge_fn = None
+        if bridge_fn is not None:
+            try:
+                # Prepare temporary buffer for file path
+                # If fileBuffer is provided, we can pass it directly, else use a temp buffer
+                use_tmp = not fileBuffer or not fileBufferSize or fileBufferSize <= 0
+                tmp_buf = None
+                buf_ptr = None
+                buf_size = int(fileBufferSize) if not use_tmp else 1024
+                if use_tmp:
+                    tmp_buf = ctypes.create_string_buffer(buf_size)
+                    buf_ptr = ctypes.cast(tmp_buf, ctypes.c_char_p)
+                else:
+                    # fileBuffer may be an integer address from ctypes; normalize to char*
+                    if isinstance(fileBuffer, int):
+                        buf_ptr = ctypes.cast(fileBuffer, ctypes.c_char_p)
+                    else:
+                        buf_ptr = ctypes.cast(fileBuffer, ctypes.c_char_p)
+                out_size = ctypes.c_uint(0)
+                out_line = ctypes.c_uint(0)
+                out_disp = ctypes.c_uint64(0)
+                hr = bridge_fn(ctypes.c_uint64(addr), buf_ptr, ctypes.c_uint(buf_size), ctypes.byref(out_size), ctypes.byref(out_line), ctypes.byref(out_disp))
+                if hr == 0 and out_line.value != 0:
+                    # Success; fill outs and copy tmp buffer to user buffer if needed
+                    if line:
+                        line.contents.value = int(out_line.value)
+                    if displacement:
+                        displacement.contents.value = ctypes.c_uint64(out_disp.value).value
+                    if fileSize:
+                        fileSize.contents.value = int(out_size.value)
+                    if use_tmp and fileBuffer and fileBufferSize and fileBufferSize > 0:
+                        n = min(len(tmp_buf.value), max(0, int(fileBufferSize) - 1))
+                        if n > 0:
+                            ctypes.memmove(fileBuffer if isinstance(fileBuffer, int) else ctypes.cast(fileBuffer, ctypes.c_void_p).value, tmp_buf.raw, n)
+                        # ensure NUL
+                        dst = fileBuffer if isinstance(fileBuffer, int) else ctypes.cast(fileBuffer, ctypes.c_void_p).value
+                        ctypes.memmove(dst + n, b"\x00", 1)
+                    try:
+                        trace_cat('disasm', f"[line] bridge 0x{addr:x} -> line {out_line.value}, size={out_size.value}, disp=0x{out_disp.value:x}")
+                    except Exception:
+                        pass
+                    return 0
+                else:
+                    try:
+                        trace_cat('disasm', f"[line] bridge miss hr=0x{hr & 0xFFFFFFFF:08x} for 0x{addr:x}")
+                    except Exception:
+                        pass
+            except Exception as exb:
+                try:
+                    trace_cat('disasm', f"[line] bridge exception: {exb}")
+                except Exception:
+                    pass
 
         text = None
         try:
