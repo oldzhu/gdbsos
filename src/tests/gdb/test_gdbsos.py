@@ -58,12 +58,11 @@ class TestSuite:
 
         logfile = os.path.join(self.logdir, scenario)
 
-        # Build the gdb command line
-        # Notes:
-        # -q: quiet, -nx: no init files, -batch: exit after commands
-        # -ex: commands; we disable pagination and confirmations for stability
+        # Event-driven flow in a single session using schedule_and_run:
+        # 1) python test.schedule_and_run(...) primes bpmd, posts an async continue, and registers a filtered stop handler
+        # 2) CLI 'continue' allows SOS callbacks/JIT and triggers the on-stop handler when bpmd JIT bp is hit
         cmd = (
-            f"{self.gdb} -q -nx -batch "
+            f"{self.gdb} -q -nx "
             f"-ex \"set confirm off\" "
             f"-ex \"set pagination off\" "
             f"-ex \"python open('{self.fail_flag_gdb}', 'a').close()\" "
@@ -72,14 +71,13 @@ class TestSuite:
             f"-ex \"python import gdbtestutils as test\" "
             f"-ex \"python test.fail_flag = '{self.fail_flag}'\" "
             f"-ex \"python test.summary_file = '{self.summary_file}'\" "
-            f"-ex \"python test.run('{self.host}', '{self.assembly}', 'scenarios.{scenario}')\" "
-            f"-ex \"quit\" "
+            f"-ex \"python test.schedule_and_run('{self.host}', '{self.assembly}', 'scenarios.{scenario}')\" "
             f" > {logfile}.log 2>&1"
         )
 
         run_with_timeout(cmd, self.timeout, self.summary_file)
 
-        # A successful test deletes fail_flag and creates fail_flag.gdb
+        # A successful test deletes fail_flag and creates fail_flag.gdb (checked after phase2)
         if os.path.isfile(self.fail_flag) or not os.path.isfile(self.fail_flag_gdb):
             tests_failed = True
 

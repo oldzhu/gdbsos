@@ -227,6 +227,10 @@ class GdbServices:
 
             def _do_continue():
                 try:
+                    try:
+                        trace_cat('bpmd', "[continue] _schedule_safe_continue: invoking 'continue' (async posted)")
+                    except Exception:
+                        pass
                     gdb.execute('continue', to_string=True)
                 except Exception:
                     pass
@@ -235,8 +239,12 @@ class GdbServices:
                         self._continue_pending = False
                     except Exception:
                         pass
-
-            gdb.post_event(_do_continue)
+            # Post the continue to GDB's event loop to avoid reentrancy
+            try:
+                gdb.post_event(_do_continue)
+            except Exception:
+                # Fallback: call directly if posting fails
+                _do_continue()
         except Exception:
             # As a last resort, try to continue synchronously (may be ignored by GDB)
             try:
@@ -1531,11 +1539,8 @@ class GdbServices:
                                 trace_cat('bpmd', f"[exception-bp] Exception callback HR=0x{int(hr) & 0xFFFFFFFF:08x}")
                             except Exception as ex:
                                 trace_cat('bpmd', f"[exception-bp] callback error: {ex}")
-                            # Auto-continue; this breakpoint is notification-only
-                            try:
-                                services_self._schedule_safe_continue()
-                            except Exception:
-                                pass
+                            # TEMP: disable auto-continue to diagnose run-state/race; leave a clear trace
+                            trace_cat('bpmd', "[exception-bp] auto-continue suppressed for diagnostics")
                             return False
 
                     bps = []
