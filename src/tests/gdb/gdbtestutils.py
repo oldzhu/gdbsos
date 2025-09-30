@@ -145,9 +145,44 @@ def run(host, assembly, scenario_module):
     assembly_name = os.path.basename(assembly)
     gdb.execute('run', to_string=True)
 
-    # Import and run the scenario
+    # Import and run the scenario with per-command tracing
     mod = importlib.import_module(scenario_module)
-    result = mod.runScenario(assembly_name)
+    scenario_file = None
+    try:
+        scenario_file = os.path.abspath(getattr(mod, '__file__', '') or '')
+    except Exception:
+        scenario_file = None
+    _orig_execute = gdb.execute
+    def _scenario_exec(cmd: str, to_string: bool = False):
+        should_log = False
+        try:
+            for fr in inspect.stack()[1:]:
+                fn = getattr(fr, 'filename', None) or (fr[1] if isinstance(fr, tuple) and len(fr) > 1 else None)
+                if fn and scenario_file and os.path.abspath(fn) == scenario_file:
+                    should_log = True
+                    break
+        except Exception:
+            pass
+        if should_log:
+            try:
+                gdb.write(f"[scenario] exec: {cmd}\n")
+            except Exception:
+                pass
+        out = _orig_execute(cmd, to_string=to_string)
+        if should_log and to_string:
+            try:
+                if out:
+                    gdb.write(f"[scenario] output:\n{out}")
+                else:
+                    gdb.write("[scenario] output: (no output)\n")
+            except Exception:
+                pass
+        return out
+    gdb.execute = _scenario_exec
+    try:
+        result = mod.runScenario(assembly_name)
+    finally:
+        gdb.execute = _orig_execute
 
     # On success, delete the fail flag so the outer runner knows we passed
     if result and not _failed:
@@ -285,7 +320,30 @@ def schedule_and_run(host, assembly, scenario_module, method: str = 'Test.Main')
         _skip_bpmd_and_continue = True
         try:
             _trace('[handler] running scenario.start')
+            # Wrap gdb.execute to trace scenario commands and outputs
+            _orig_execute = gdb.execute
+            def _scenario_exec(cmd: str, to_string: bool = False):
+                try:
+                    gdb.write(f"[scenario] exec: {cmd}\n")
+                except Exception:
+                    pass
+                out = _orig_execute(cmd, to_string=to_string)
+                if to_string:
+                    try:
+                        if out:
+                            gdb.write(f"[scenario] output:\n{out}")
+                        else:
+                            gdb.write("[scenario] output: (no output)\n")
+                    except Exception:
+                        pass
+                return out
+            gdb.execute = _scenario_exec
             mod = importlib.import_module(scenario_module)
+            scenario_file = None
+            try:
+                scenario_file = os.path.abspath(getattr(mod, '__file__', '') or '')
+            except Exception:
+                scenario_file = None
             result = mod.runScenario(_assembly_name_cached)
             _trace(f"[handler] scenario.done result={result} failed={_failed}")
             if result and not _failed:
@@ -294,6 +352,11 @@ def schedule_and_run(host, assembly, scenario_module, method: str = 'Test.Main')
                 except Exception:
                     pass
         finally:
+            # Restore original gdb.execute and clear flag
+            try:
+                gdb.execute = _orig_execute
+            except Exception:
+                pass
             _skip_bpmd_and_continue = False
             _trace('[handler] skip flag cleared')
 

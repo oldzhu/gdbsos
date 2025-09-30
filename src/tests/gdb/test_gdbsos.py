@@ -65,6 +65,7 @@ class TestSuite:
             f"{self.gdb} -q -nx "
             f"-ex \"set confirm off\" "
             f"-ex \"set pagination off\" "
+            f"-ex \"cd {self.logdir}\" "
             f"-ex \"python open('{self.fail_flag_gdb}', 'a').close()\" "
             f"-ex \"python import sys; sys.path.insert(0, '{os.path.abspath(os.path.dirname(__file__))}')\" "
             f"-ex \"source {self.plugin}\" "
