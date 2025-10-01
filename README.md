@@ -4,6 +4,24 @@ gdbsos — GDB SOS plugin
 - src/gdbplugin/bridge: Native bridge (CMake + bridge.cpp).
 - src/diagnostics: .NET diagnostics as a submodule.
 
+## How to use
+
+- Get the binaries: download the latest Linux runtime tarball from Releases, and optionally the symbols tarball for debug info.
+	- Releases: https://github.com/oldzhu/gdbsos/releases (e.g., vX.Y.Z)
+- Extract the runtime tar to a folder you control (example: ~/.dotnet/sos or any path you prefer).
+	- If you also downloaded the symbols tar (…symbols.tar.gz), extract it into the same folder.
+- In GDB, source the plugin and explore commands:
+	- source /path/to/sos.py
+	- sos help
+	- sos clrstack
+
+Notes
+- libsos.so discovery order at runtime:
+	1) $SOS_ROOT/libsos.so
+	2) ~/.dotnet/sos/libsos.so
+	3) The directory containing sos.py
+- The bridge (libsosgdbbridge.so) is automatically loaded next to the located libsos.so to ensure stable hosting.
+
 Usage
 - Build diagnostics, then build the bridge.
 - libsos.so discovery: at runtime we search (in order): $SOS_ROOT/libsos.so, ~/.dotnet/sos/libsos.so, then the directory containing sos.py.

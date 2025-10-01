@@ -15,6 +15,8 @@ JOBS="$(nproc)"
 PASS_TO_DIAG=()
 SKIP_DIAG=0
 DO_PACKAGE=0
+# Optional release tag version used in package filenames (e.g., v0.1.0)
+TAG_VERSION=""
 # Deprecated: deploy-to-diagnostics is no longer needed (see note above)
 DEPLOY_TO_DIAG=0
 DEPLOY_DIR=""
@@ -27,6 +29,7 @@ Examples:
   $0 -c Debug -- -skipmanaged
   $0 -c Release --skip-diagnostics --package
   $0 -c Release
+  $0 -c Release --package --tag v0.1.0
 EOF
 }
 
@@ -38,6 +41,8 @@ while [[ $# -gt 0 ]]; do
       SKIP_DIAG=1; shift;;
     --package)
       DO_PACKAGE=1; shift;;
+    --tag)
+      TAG_VERSION="${2:-}"; shift 2;;
     --deploy-to-diagnostics)
       echo "[note] --deploy-to-diagnostics is deprecated and ignored (no-op)." >&2; shift;;
     --no-deploy-to-diagnostics)
@@ -192,9 +197,49 @@ echo "Artifacts in: ${BIN_DIR}"
 
 # Optional packaging step: create a tar.gz bundle of the install directory
 if [[ ${DO_PACKAGE} -eq 1 ]]; then
-  PKG_NAME="gdbsos-linux.${ARCH}.${CONFIG}.tar.gz"
-  PKG_DIR="${REPO_ROOT}/artifacts/bin"
-  echo "==> Packaging ${BIN_DIR} -> ${PKG_DIR}/${PKG_NAME}"
-  tar -C "${BIN_DIR}" -czf "${PKG_DIR}/${PKG_NAME}" .
-  echo "==> Package created: ${PKG_DIR}/${PKG_NAME}"
+  # Resolve tag if not provided: try exact tag on HEAD; else timestamp
+  if [[ -z "${TAG_VERSION}" ]]; then
+    if git -C "${REPO_ROOT}" describe --tags --exact-match >/dev/null 2>&1; then
+      TAG_VERSION="$(git -C "${REPO_ROOT}" describe --tags --exact-match)"
+    else
+      TAG_VERSION="local-$(date +%Y%m%d%H%M%S)"
+    fi
+  fi
+
+  PKG_DIR="${REPO_ROOT}/artifacts"
+  mkdir -p "${PKG_DIR}"
+
+  PKG_BASE="gdbsos-linux-${ARCH}-${CONFIG}-${TAG_VERSION}"
+  PKG_NAME="${PKG_BASE}.tar.gz"
+  PKG_SYM_NAME="${PKG_BASE}.symbols.tar.gz"
+
+  echo "==> Packaging runtime (excluding *.dbg): ${BIN_DIR} -> ${PKG_DIR}/${PKG_NAME}"
+  tar -C "${BIN_DIR}" --exclude='*.dbg' -czf "${PKG_DIR}/${PKG_NAME}" .
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "${PKG_DIR}" && sha256sum "${PKG_NAME}" > "${PKG_NAME}.sha256") || true
+  fi
+  echo "==> Runtime package: ${PKG_DIR}/${PKG_NAME}"
+
+  # Symbols: include all *.dbg files under BIN_DIR (any depth) if present
+  # Build a list of relative paths to keep directory structure if any
+  SYM_LIST_FILE=""
+  SYM_COUNT=0
+  SYM_LIST_FILE="$(mktemp)" || SYM_LIST_FILE=""
+  if [[ -n "${SYM_LIST_FILE}" ]]; then
+    # Create list of relative paths
+    (cd "${BIN_DIR}" && find . -type f -name "*.dbg" -print) > "${SYM_LIST_FILE}" || true
+    SYM_COUNT=$(wc -l < "${SYM_LIST_FILE}" || echo 0)
+  fi
+  if [[ -n "${SYM_LIST_FILE}" && ${SYM_COUNT} -gt 0 ]]; then
+    echo "==> Packaging symbols (*.dbg): ${PKG_DIR}/${PKG_SYM_NAME} (${SYM_COUNT} files)"
+    tar -C "${BIN_DIR}" -czf "${PKG_DIR}/${PKG_SYM_NAME}" -T "${SYM_LIST_FILE}"
+    rm -f "${SYM_LIST_FILE}"
+    if command -v sha256sum >/dev/null 2>&1; then
+      (cd "${PKG_DIR}" && sha256sum "${PKG_SYM_NAME}" > "${PKG_SYM_NAME}.sha256") || true
+    fi
+    echo "==> Symbols package: ${PKG_DIR}/${PKG_SYM_NAME}"
+  else
+    [[ -n "${SYM_LIST_FILE}" ]] && rm -f "${SYM_LIST_FILE}"
+    echo "==> No symbol files (*.dbg) found; skipping symbols package"
+  fi
 fi

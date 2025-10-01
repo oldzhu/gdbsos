@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g., v0.1.0)'
+        required: false
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang
+
+      - name: Compute tag
+        id: vars
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ] && [ -n "${{ github.ref_name }}" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and package (Release)
+        env:
+          TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          chmod +x ./build.sh
+          ./build.sh -c Release --package --tag "$TAG"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/gdbsos-linux-*-Release-${{ steps.vars.outputs.tag }}.tar.gz
+            artifacts/gdbsos-linux-*-Release-${{ steps.vars.outputs.tag }}.tar.gz.sha256
+            artifacts/gdbsos-linux-*-Release-${{ steps.vars.outputs.tag }}.symbols.tar.gz
+            artifacts/gdbsos-linux-*-Release-${{ steps.vars.outputs.tag }}.symbols.tar.gz.sha256
