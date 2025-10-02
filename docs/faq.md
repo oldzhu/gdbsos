@@ -29,29 +29,12 @@ Notes:
 - This environment variable must be set in the shell before launching lldb/gdb (and the target).
 - Re-enable later with `export DOTNET_EnableWriteXorExecute=1` if desired.
 
-## Hosting initialization errors
-
-- 0x80070057 (E_INVALIDARG) from coreclr_initialize
-  - Commonly caused by relative paths in APP_PATHS/NATIVE_DLL_SEARCH_DIRECTORIES when the plugin is sourced via a relative path.
-  - Fix: use an absolute path to the plugin directory. Current `sos.py` resolves its own path to absolute automatically; if issues persist, source with an absolute path:
-    - `source /absolute/path/to/src/diagnostics/artifacts/bin/current/sos.py`
-
-- 0x80131022 (HOST_E_INVALIDOPERATION)
-  - Happens when hosting was already initialized in the same GDB process due to a prior attempt.
-  - Fix: start a fresh GDB session and retry.
-
 ## Picking a runtime
 
 - Prefer a stable shared runtime directory under DOTNET_ROOT:
   - `/.../.dotnet/shared/Microsoft.NETCore.App/8.0.x`
 - Initialize explicitly if needed:
   - `sethostruntime -major 8 /.../Microsoft.NETCore.App/8.0.x`
-
-## Symbols and DAC
-
-- If `clrstack` reports DAC load issues, enable symbol servers or specify the path:
-  - `setsymbolserver -ms`
-  - `setclrpath <directory with libmscordaccore.so>`
 
 ## Building a Debug CoreCLR + System.Private.CoreLib for Deep Native Debugging
 
@@ -124,21 +107,18 @@ Version       : 8.0.15 (override with RUNTIME_VERSION=...)
 ```
 
 #### Swap Commands
-Swap only native components:
-```bash
-scripts/swap-coreclr.sh apply
-```
+
 Swap native + CoreLib:
 ```bash
-SWAP_CORELIB=1 scripts/swap-coreclr.sh apply
+scripts/swap-coreclr.sh apply
 ```
 Check status:
 ```bash
 scripts/swap-coreclr.sh status
 ```
-Restore originals (native only or native+CoreLib depending on what was swapped):
+Restore originals (native+CoreLib depending on what was swapped):
 ```bash
-SWAP_CORELIB=1 scripts/swap-coreclr.sh restore
+scripts/swap-coreclr.sh restore
 ```
 
 #### Important Environment Overrides
@@ -179,7 +159,7 @@ stat -c '%n %s' src/diagnostics/.dotnet/shared/Microsoft.NETCore.App/8.0.15/Syst
 ### Restoring After a Crash
 If a swapped process crashes, just:
 ```bash
-SWAP_CORELIB=1 scripts/swap-coreclr.sh restore
+scripts/swap-coreclr.sh restore
 ```
 Then start a fresh debugging session.
 
@@ -193,3 +173,21 @@ For GC stress, tiering experiments, or multi-arch scenarios, extend the build sc
   - Disable paging: `set pagination off`.
   - Capture to file: `set logging on` then run the command.
 - Pressing `q` during paging may not cancel native printing from SOS; Ctrl-C interrupts GDB.
+
+## Help and commands
+
+- New: prefix command 'sos' with subcommands. Try:
+	- help sos              # lists only SOS commands with one-line descriptions
+	- help sos dumpheap     # per-command help (managed when runtime is loaded)
+	- sos dumpheap -stat    # invoke an SOS subcommand
+- Fallback dispatcher:
+	- sos exec <cmd> [args] # runs any SOS command name dynamically (if not pre-registered)
+- Top-level aliases:
+	- By default, top-level commands (bpmd, clrstack, dumpheap, ...) are also registered.
+	- To keep GDB's 'help data' uncluttered, disable them with:
+		- export SOS_GDB_TOPLEVEL_ALIASES=0
+	- The 'help' command itself is not shadowed; use 'sos help' or 'sos soshelp' for SOS help.
+
+## Deploy options
+
+- Obsolete: historical deploy helpers that copied the bridge and Python files into the diagnostics artifacts/bin tree have been deprecated. The build no longer deploys to diagnostics; related CMake/script logic is commented out. Rely on SOS_ROOT or ~/.dotnet/sos for libsos.so; the gdbsos automatically co-locates the bridge with libsos when needed.

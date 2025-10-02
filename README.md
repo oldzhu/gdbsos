@@ -1,52 +1,35 @@
-gdbsos — GDB SOS plugin
-[FAQ / Troubleshooting](docs/faq.md)
+gdbsos — GDB SOS plugin to make gdb doing .net debugging
+
 - src/gdbplugin/sos: Python plugin (GDB commands, services, ABI).
 - src/gdbplugin/bridge: Native bridge (CMake + bridge.cpp).
-- src/diagnostics: .NET diagnostics as a submodule.
-
+- src/diagnostics: .NET diagnostics submodule.
+- src/runtime: .NET runtime submodule
+<img src="docs/gdbsos-demo.gif" alt="gdbsos .net debugging demo" width="1500"/>
 ## How to use
 
 - Get the binaries: download the latest Linux runtime tarball from Releases, and optionally the symbols tarball for debug info.
-	- Releases: https://github.com/oldzhu/gdbsos/releases (e.g., vX.Y.Z)
-- Extract the runtime tar to a folder you control (example: ~/.dotnet/sos or any path you prefer).
+	- Releases: https://github.com/oldzhu/gdbsos/releases (e.g., v0.1.0)
+- Extract the gdbsos tar to a folder you control (example: ~/gdbsos or any path you prefer).
 	- If you also downloaded the symbols tar (…symbols.tar.gz), extract it into the same folder.
 - In GDB, source the plugin and explore commands:
 	- source /path/to/sos.py
 	- sos help
 	- sos clrstack
+	or
+	- clrstack
 
 Notes
-- libsos.so discovery order at runtime:
+- libsos.so discovery order at gdbsos:
 	1) $SOS_ROOT/libsos.so
 	2) ~/.dotnet/sos/libsos.so
 	3) The directory containing sos.py
-- The bridge (libsosgdbbridge.so) is automatically loaded next to the located libsos.so to ensure stable hosting.
+- Bridge co-location policy: regardless of where sos.py resides, when libsos.so is found in another directory we stage (copy if necessary) and always load libsosgdbbridge.so from the same directory as libsos.so. This is required for reliable managed hosting (prevents hosting delegate 0x80070002 failures). 
 
-Usage
-- Build diagnostics, then build the bridge.
-- libsos.so discovery: at runtime we search (in order): $SOS_ROOT/libsos.so, ~/.dotnet/sos/libsos.so, then the directory containing sos.py.
-- Bridge co-location policy: regardless of where sos.py resides, when libsos.so is found in another directory we stage (copy if necessary) and always load libsosgdbbridge.so from the same directory as libsos.so. This is required for reliable managed hosting (prevents hosting delegate 0x80070002 failures). No override is provided to revert the legacy separated layout.
-- In GDB: source /path/to/sos.py to register commands.
-
-Help and commands
-- New: prefix command 'sos' with subcommands. Try:
-	- help sos              # lists only SOS commands with one-line descriptions
-	- help sos dumpheap     # per-command help (managed when runtime is loaded)
-	- sos dumpheap -stat    # invoke an SOS subcommand
-- Fallback dispatcher:
-	- sos exec <cmd> [args] # runs any SOS command name dynamically (if not pre-registered)
-- Top-level aliases:
-	- By default, top-level commands (bpmd, clrstack, dumpheap, ...) are also registered.
-	- To keep GDB's 'help data' uncluttered, disable them with:
-		- export SOS_GDB_TOPLEVEL_ALIASES=0
-	- The 'help' command itself is not shadowed; use 'sos help' or 'sos soshelp' for SOS help.
-
+## How to build
 Dev Container
 - Reopen folder in container; submodules sync/init runs automatically.
 - Manual build inside container:
 	- ./build.sh -c Release
 
-Deploy options
-- Obsolete: historical deploy helpers that copied the bridge and Python files into the diagnostics artifacts/bin tree have been deprecated. The build no longer deploys to diagnostics; related CMake/script logic is commented out. Rely on SOS_ROOT or ~/.dotnet/sos for libsos.so; the runtime automatically co-locates the bridge with libsos when needed.
 
-For troubleshooting and FAQs, see `docs/faq.md`.
+For troubleshooting and FAQs, see [FAQ / Troubleshooting](docs/faq.md).
