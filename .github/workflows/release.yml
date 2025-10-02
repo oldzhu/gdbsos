@@ -53,7 +53,7 @@ jobs:
           tag_name: ${{ steps.vars.outputs.tag }}
           fail_on_unmatched_files: false
           files: |
-            artifacts/gdbsos-linux-*-Release-${{ steps.vars.outputs.tag }}.tar.gz
-            artifacts/gdbsos-linux-*-Release-${{ steps.vars.outputs.tag }}.tar.gz.sha256
             artifacts/gdbsos-linux-*-Release-${{ steps.vars.outputs.tag }}.symbols.tar.gz
             artifacts/gdbsos-linux-*-Release-${{ steps.vars.outputs.tag }}.symbols.tar.gz.sha256
+            artifacts/gdbsos-linux-*-Release-${{ steps.vars.outputs.tag }}.tar.gz
+            artifacts/gdbsos-linux-*-Release-${{ steps.vars.outputs.tag }}.tar.gz.sha256
