@@ -9,6 +9,7 @@ LOCAL_COMMIT=$(git rev-parse HEAD)
 UPSTREAM_COMMIT=$(git ls-remote origin main | cut -f1)
 if [ "$LOCAL_COMMIT" != "$UPSTREAM_COMMIT" ]; then
   echo "Upstream changes detected. Syncing..."
+  rm ${REPO_ROOT}/.git/modules/src/diagnostics/index.lock
   git fetch origin main
   git merge origin/main
   cd ${REPO_ROOT}
