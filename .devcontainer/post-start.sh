@@ -9,7 +9,7 @@ LOCAL_COMMIT=$(git rev-parse HEAD)
 UPSTREAM_COMMIT=$(git ls-remote origin main | cut -f1)
 if [ "$LOCAL_COMMIT" != "$UPSTREAM_COMMIT" ]; then
   echo "Upstream changes detected. Syncing..."
-  rm ${REPO_ROOT}/.git/modules/src/diagnostics/index.lock
+  rm -f ${REPO_ROOT}/.git/modules/src/diagnostics/index.lock
   git fetch origin main
   git merge origin/main
   cd ${REPO_ROOT}
@@ -59,7 +59,11 @@ fi
 # Export minimal variables; sos.py will load co-located libs and .py from diagnostics/bin/current.
 export DIAGNOSTICS_ROOT="${REPO_ROOT}/src/diagnostics"
 export DOTNET_ROOT="${REPO_ROOT}/src/diagnostics/.dotnet"
+export SOS_ROOT="${DIAGNOSTICS_ROOT}/artifacts/bin/current"
 export PATH="${DOTNET_ROOT}:${DOTNET_ROOT}/tools:${PATH}"
+
+# Ensure JIT memory protections are compatible with bpmd/JIT breakpoints under test.
+export DOTNET_EnableWriteXorExecute=0
 
 echo "post-start: DIAGNOSTICS_ROOT=${DIAGNOSTICS_ROOT}"
 echo "post-start: DOTNET_ROOT=${DOTNET_ROOT}"

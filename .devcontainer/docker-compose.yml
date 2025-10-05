@@ -1,0 +1,30 @@
+services:
+  dev-amd64:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+      args:
+        VARIANT: "8.0-jammy"
+    platform: linux/amd64
+    volumes:
+      - ..:/workspaces/gdbsos:cached
+    working_dir: /workspaces/gdbsos
+    user: vscode
+    privileged: true
+    tty: true
+    command: sleep infinity
+
+  dev-arm64:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+      args:
+        VARIANT: "8.0-jammy"
+    platform: linux/arm64
+    volumes:
+      - ..:/workspaces/gdbsos:cached
+    working_dir: /workspaces/gdbsos
+    user: vscode
+    privileged: true
+    tty: true
+    command: sleep infinity

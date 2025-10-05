@@ -55,6 +55,8 @@ if [[ -z "${ASSEMBLY:-}" ]]; then
   done
 fi
 
+export SOS_ROOT="${REPO_ROOT}/src/diagnostics/artifacts/bin/current"
+
 ASSEMBLY=${ASSEMBLY:-"/path/to/TestDebuggee.dll"}
 TIMEOUT=${TIMEOUT:-120}
 REGEX=${REGEX:-'t_cmd_.*\.py'}
