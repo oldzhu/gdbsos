@@ -105,6 +105,68 @@ if [[ ${SKIP_DIAG} -eq 0 ]]; then
   fi
 
   DIAG_GLOBAL_JSON="${DIAG_ROOT}/global.json"
+  # Acquire a submodule-local lock to avoid races when multiple builds flip .dotnet symlink
+  HAVE_DIAG_LOCK=0
+  if command -v flock >/dev/null 2>&1; then
+    DIAG_LOCK_FILE="${DIAG_ROOT}/.dotnet-arcade.lock"
+    # shellcheck disable=SC3003
+    exec {DIAG_LOCK_FD}>"${DIAG_LOCK_FILE}"
+    echo "==> Acquiring diagnostics toolset lock: ${DIAG_LOCK_FILE}"
+    flock "${DIAG_LOCK_FD}"
+    HAVE_DIAG_LOCK=1
+  fi
+  # Ensure diagnostics/.dotnet resolves to the per-arch folder so Arcade fallback hits the suffixed dir
+  DIAG_LINK_TARGET="${DIAG_ROOT}/.dotnet"
+  DIAG_SUFFIX_DIR="${DIAG_ROOT}/.dotnet.${ARCH}"
+  mkdir -p "${DIAG_SUFFIX_DIR}" || true
+  ensure_diag_link() {
+    local link_target="$1" suffix_dir="$2"
+    if [[ -L "$link_target" ]]; then
+      local dest
+      dest="$(readlink -f "$link_target" || true)"
+      local want
+      want="$(readlink -f "$suffix_dir" || true)"
+      if [[ "$dest" != "$want" ]]; then
+        echo "WARN: $link_target currently points to $dest, expected $want"
+        if [[ "${DIAG_DOTNET_FORCE:-0}" == "1" ]]; then
+          ln -sfn "$suffix_dir" "$link_target"
+        elif [[ -t 0 || -t 1 ]]; then
+          read -r -p "Relink $link_target to $suffix_dir? [y/N] " ans < /dev/tty || ans=""
+          if [[ "$ans" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+            ln -sfn "$suffix_dir" "$link_target"
+          else
+            echo "Aborting: $link_target not relinked. Set DIAG_DOTNET_FORCE=1 to override." >&2
+            exit 2
+          fi
+        else
+          echo "Non-interactive session. Set DIAG_DOTNET_FORCE=1 to relink $link_target to $suffix_dir." >&2
+          exit 2
+        fi
+      fi
+    elif [[ -d "$link_target" ]]; then
+      echo "WARN: $link_target exists as a directory; this can cause cross-arch mixing"
+      if [[ "${DIAG_DOTNET_FORCE:-0}" == "1" ]]; then
+        rm -rf "$link_target"
+        ln -sfn "$suffix_dir" "$link_target"
+      elif [[ -t 0 || -t 1 ]]; then
+        read -r -p "Remove directory and create symlink to $suffix_dir? [y/N] " ans < /dev/tty || ans=""
+        if [[ "$ans" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+          rm -rf "$link_target"
+          ln -sfn "$suffix_dir" "$link_target"
+        else
+          echo "Aborting: $link_target left as directory. Set DIAG_DOTNET_FORCE=1 to override." >&2
+          exit 2
+        fi
+      else
+        echo "Non-interactive session. Set DIAG_DOTNET_FORCE=1 to replace $link_target with symlink to $suffix_dir." >&2
+        exit 2
+      fi
+    else
+      ln -sfn "$suffix_dir" "$link_target"
+    fi
+  }
+  ensure_diag_link "$DIAG_LINK_TARGET" "$DIAG_SUFFIX_DIR"
+
   # Make sure submodule local excludes ignore .dotnet* so git status stays clean
   if command -v git >/dev/null 2>&1; then
     DIAG_EXCLUDE_FILE="$(git -C "${DIAG_ROOT}" rev-parse --git-path info/exclude 2>/dev/null || true)"
@@ -166,6 +228,13 @@ if [[ ${SKIP_DIAG} -eq 0 ]]; then
   pushd "${DIAG_ROOT}" >/dev/null
   ./build.sh -c "${CONFIG}" "${PASS_TO_DIAG[@]}"
   popd >/dev/null
+
+  # Release diagnostics toolset lock if held
+  if [[ "${HAVE_DIAG_LOCK}" -eq 1 ]]; then
+    flock -u "${DIAG_LOCK_FD}" || true
+    # Close FD
+    eval "exec ${DIAG_LOCK_FD}>&-" || true
+  fi
 
   # Update diagnostics 'current' symlink to the built configuration
   DIAG_BIN_ROOT="${DIAG_ROOT}/artifacts/bin"

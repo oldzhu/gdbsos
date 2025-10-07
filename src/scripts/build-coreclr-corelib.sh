@@ -48,6 +48,16 @@ export DOTNET_INSTALL_DIR="${REPO_ROOT}/src/runtime/.dotnet-${ARCH}"
 export DOTNET_ROOT="${DOTNET_INSTALL_DIR}"
 export PATH="${DOTNET_INSTALL_DIR}:${DOTNET_INSTALL_DIR}/tools:${PATH}"
 
+# Acquire a runtime-local lock to guard .dotnet symlink/installer and the entire build from races
+HAVE_RT_LOCK=0
+if command -v flock >/dev/null 2>&1; then
+  RT_LOCK_FILE="${REPO_ROOT}/src/runtime/.dotnet-arcade.lock"
+  exec {RT_LOCK_FD}>"${RT_LOCK_FILE}"
+  echo "==> Acquiring runtime toolset lock: ${RT_LOCK_FILE}"
+  flock "${RT_LOCK_FD}"
+  HAVE_RT_LOCK=1
+fi
+
 # Print toolset diagnostics and ensure SDK from runtime/global.json is present
 echo "==> Runtime toolset"
 echo "    ARCH=${ARCH} uname -m=$(uname -m)"
@@ -60,6 +70,66 @@ else
 fi
 
 RUNTIME_GLOBAL_JSON="${REPO_ROOT}/src/runtime/global.json"
+# Acquire a runtime-local lock to guard .dotnet symlink/installer from races
+HAVE_RT_LOCK=0
+if command -v flock >/dev/null 2>&1; then
+  RT_LOCK_FILE="${REPO_ROOT}/src/runtime/.dotnet-arcade.lock"
+  exec {RT_LOCK_FD}>"${RT_LOCK_FILE}"
+  echo "==> Acquiring runtime toolset lock: ${RT_LOCK_FILE}"
+  flock "${RT_LOCK_FD}"
+  HAVE_RT_LOCK=1
+fi
+# Ensure runtime/.dotnet resolves to the per-arch folder; avoid auto-migration, prompt or require force
+RT_LINK_TARGET="${REPO_ROOT}/src/runtime/.dotnet"
+RT_SUFFIX_DIR="${REPO_ROOT}/src/runtime/.dotnet-${ARCH}"
+mkdir -p "${RT_SUFFIX_DIR}" || true
+ensure_rt_link() {
+  local link_target="$1" suffix_dir="$2"
+  if [[ -L "$link_target" ]]; then
+    local dest
+    dest="$(readlink -f "$link_target" || true)"
+    local want
+    want="$(readlink -f "$suffix_dir" || true)"
+    if [[ "$dest" != "$want" ]]; then
+      echo "WARN: $link_target currently points to $dest, expected $want"
+      if [[ "${RT_DOTNET_FORCE:-0}" == "1" ]]; then
+        ln -sfn "$suffix_dir" "$link_target"
+      elif [[ -t 0 || -t 1 ]]; then
+        read -r -p "Relink $link_target to $suffix_dir? [y/N] " ans < /dev/tty || ans=""
+        if [[ "$ans" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+          ln -sfn "$suffix_dir" "$link_target"
+        else
+          echo "Aborting: $link_target not relinked. Set RT_DOTNET_FORCE=1 to override." >&2
+          exit 2
+        fi
+      else
+        echo "Non-interactive session. Set RT_DOTNET_FORCE=1 to relink $link_target to $suffix_dir." >&2
+        exit 2
+      fi
+    fi
+  elif [[ -d "$link_target" ]]; then
+    echo "WARN: $link_target exists as a directory; this can cause cross-arch mixing"
+    if [[ "${RT_DOTNET_FORCE:-0}" == "1" ]]; then
+      rm -rf "$link_target"
+      ln -sfn "$suffix_dir" "$link_target"
+    elif [[ -t 0 || -t 1 ]]; then
+      read -r -p "Remove directory and create symlink to $suffix_dir? [y/N] " ans < /dev/tty || ans=""
+      if [[ "$ans" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        rm -rf "$link_target"
+        ln -sfn "$suffix_dir" "$link_target"
+      else
+        echo "Aborting: $link_target left as directory. Set RT_DOTNET_FORCE=1 to override." >&2
+        exit 2
+      fi
+    else
+      echo "Non-interactive session. Set RT_DOTNET_FORCE=1 to replace $link_target with symlink to $suffix_dir." >&2
+      exit 2
+    fi
+  else
+    ln -sfn "$suffix_dir" "$link_target"
+  fi
+}
+ensure_rt_link "$RT_LINK_TARGET" "$RT_SUFFIX_DIR"
 # Ensure the runtime submodule ignores local .dotnet toolset paths in git status
 if command -v git >/dev/null 2>&1; then
   RT_EXCLUDE_FILE="$(git -C "${REPO_ROOT}/src/runtime" rev-parse --git-path info/exclude 2>/dev/null || true)"
@@ -112,6 +182,8 @@ else
   echo "WARN: ${RUNTIME_GLOBAL_JSON} not found; proceeding without pre-install. Arcade may fall back to .dotnet" >&2
 fi
 
+# NOTE: Lock remains held until after build completes (see end of file)
+
 run(){ echo "[build] $*"; "$@"; }
 
 if [ "${VERBOSE:-0}" = "1" ]; then
@@ -145,3 +217,9 @@ Copy/swap helper example:
 To also swap CoreLib run (after enhancing swap script):
   SWAP_CORELIB=1 scripts/swap-coreclr.sh apply
 EOF
+
+# Release runtime toolset lock if held (end of script)
+if [[ "${HAVE_RT_LOCK}" -eq 1 ]]; then
+  flock -u "${RT_LOCK_FD}" || true
+  eval "exec ${RT_LOCK_FD}>&-" || true
+fi
