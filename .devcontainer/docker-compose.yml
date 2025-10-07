@@ -1,4 +1,10 @@
 services:
+  binfmt:
+    image: tonistiigi/binfmt:latest
+    privileged: true
+    command: ["--install", "arm64"]
+    restart: "no"
+
   dev-amd64:
     build:
       context: ..
@@ -13,6 +19,7 @@ services:
     privileged: true
     tty: true
     command: sleep infinity
+    environment: {}
 
   dev-arm64:
     build:
@@ -28,3 +35,7 @@ services:
     privileged: true
     tty: true
     command: sleep infinity
+    depends_on:
+      binfmt:
+        condition: service_completed_successfully
+    environment: {}

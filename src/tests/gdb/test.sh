@@ -18,12 +18,23 @@ CONFIG=${CONFIG:-Debug}
 # Resolve repository root (three levels up from this script: src/tests/gdb)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/../../../" && pwd)
 
-# If PLUGIN_PATH not provided, attempt to auto-detect sos.py in publish folders
+# Detect current architecture (maps uname -m to our ARCH labels)
+UNAME_M=$(uname -m)
+case "${UNAME_M}" in
+  x86_64)   ARCH="x64" ;;
+  aarch64)  ARCH="arm64" ;;
+  armv7l|armhf) ARCH="arm" ;;
+  s390x)    ARCH="s390x" ;;
+  ppc64le)  ARCH="ppc64le" ;;
+  *)        ARCH="${UNAME_M}" ;;
+esac
+
+# If PLUGIN_PATH not provided, attempt to auto-detect sos.py in publish folders for this arch
 if [[ -z "${PLUGIN_PATH:-}" ]]; then
   CANDIDATES=(
-    "${REPO_ROOT}/artifacts/bin/linux.x64.${CONFIG}/sos.py"
-    "${REPO_ROOT}/artifacts/bin/linux.x64.Debug/sos.py"
-    "${REPO_ROOT}/artifacts/bin/linux.x64.Release/sos.py"
+    "${REPO_ROOT}/artifacts/bin/linux.${ARCH}.${CONFIG}/sos.py"
+    "${REPO_ROOT}/artifacts/bin/linux.${ARCH}.Debug/sos.py"
+    "${REPO_ROOT}/artifacts/bin/linux.${ARCH}.Release/sos.py"
   )
   for c in "${CANDIDATES[@]}"; do
     if [[ -f "$c" ]]; then
@@ -34,7 +45,7 @@ if [[ -z "${PLUGIN_PATH:-}" ]]; then
 fi
 
 if [[ -z "${PLUGIN_PATH:-}" ]]; then
-  echo "ERROR: Unable to locate sos.py in artifacts/bin/linux.x64.[Debug|Release]. Set PLUGIN_PATH explicitly." >&2
+  echo "ERROR: Unable to locate sos.py in artifacts/bin/linux.${ARCH}.[Debug|Release]. Set PLUGIN_PATH explicitly." >&2
   exit 1
 fi
 

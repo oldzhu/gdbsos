@@ -86,6 +86,83 @@ OBJ_DIR="${REPO_ROOT}/artifacts/obj/gdbbridge/${OS}.${ARCH}.${CONFIG}"
 # 1) Build diagnostics first
 if [[ ${SKIP_DIAG} -eq 0 ]]; then
   echo "==> Building diagnostics (-c ${CONFIG})"
+  # Configure per-arch, per-submodule dotnet toolset location (Option B)
+  export DOTNET_MULTILEVEL_LOOKUP=0
+  export DOTNET_INSTALL_DIR="${DIAG_ROOT}/.dotnet.${ARCH}"
+  export DOTNET_ROOT="${DOTNET_INSTALL_DIR}"
+  export PATH="${DOTNET_INSTALL_DIR}:${DOTNET_INSTALL_DIR}/tools:${PATH}"
+
+  # Ensure the required SDK version (from diagnostics/global.json) is installed
+  # into DOTNET_INSTALL_DIR so Arcade's InitializeDotNetCli will honor it.
+  echo "==> Diagnostics toolset:"
+  echo "    ARCH=${ARCH} uname -m=$(uname -m)"
+  echo "    DOTNET_INSTALL_DIR=${DOTNET_INSTALL_DIR}"
+  echo "    DOTNET_ROOT=${DOTNET_ROOT}"
+  if [[ ":${PATH}:" == *":${DOTNET_INSTALL_DIR}:"* ]]; then
+    echo "    PATH includes DOTNET: yes"
+  else
+    echo "    PATH includes DOTNET: no"
+  fi
+
+  DIAG_GLOBAL_JSON="${DIAG_ROOT}/global.json"
+  # Make sure submodule local excludes ignore .dotnet* so git status stays clean
+  if command -v git >/dev/null 2>&1; then
+    DIAG_EXCLUDE_FILE="$(git -C "${DIAG_ROOT}" rev-parse --git-path info/exclude 2>/dev/null || true)"
+    if [[ -n "${DIAG_EXCLUDE_FILE}" ]]; then
+      mkdir -p "$(dirname "${DIAG_EXCLUDE_FILE}")" || true
+      for pat in ".dotnet*" ".dotnet.*"; do
+        if [[ -f "${DIAG_EXCLUDE_FILE}" ]]; then
+          grep -qxF "${pat}" "${DIAG_EXCLUDE_FILE}" || echo "${pat}" >> "${DIAG_EXCLUDE_FILE}"
+        else
+          echo "${pat}" >> "${DIAG_EXCLUDE_FILE}"
+        fi
+      done
+    fi
+  fi
+
+  if [[ -f "${DIAG_GLOBAL_JSON}" ]]; then
+    # Best-effort install. dotnet-install.sh is idempotent and will skip if present.
+    TMPDIR_DIAG="$(mktemp -d)"
+    INSTALLER_SH="${TMPDIR_DIAG}/dotnet-install.sh"
+    # Prefer official installer URL; fall back to Arcade one if needed.
+    if curl -sSfL "https://dot.net/v1/dotnet-install.sh" -o "${INSTALLER_SH}"; then
+      :
+    else
+      curl -sSfL "https://builds.dotnet.microsoft.com/dotnet/scripts/v1/dotnet-install.sh" -o "${INSTALLER_SH}"
+    fi
+    chmod +x "${INSTALLER_SH}"
+
+    # Map architecture for installer (x64/arm64 only; omit if unknown)
+    INSTALL_ARCH=""
+    case "${ARCH}" in
+      x64) INSTALL_ARCH="x64" ;;
+      arm64) INSTALL_ARCH="arm64" ;;
+      *) INSTALL_ARCH="" ;;
+    esac
+
+    echo "==> Ensuring diagnostics SDK per global.json is present under ${DOTNET_INSTALL_DIR}"
+    # Optional timeout in seconds for dotnet-install; set DOTNET_INSTALL_TIMEOUT to enable.
+    INSTALL_TIMEOUT="${DOTNET_INSTALL_TIMEOUT:-0}"
+    timeout_cmd=()
+    if [[ "${INSTALL_TIMEOUT}" =~ ^[0-9]+$ ]] && [[ "${INSTALL_TIMEOUT}" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
+      # Use --foreground to allow Ctrl-C to be handled properly in terminals
+      timeout_cmd=(timeout --foreground "${INSTALL_TIMEOUT}")
+      echo "    (with timeout ${INSTALL_TIMEOUT}s)"
+    fi
+    echo -n "    Running dotnet-install.sh"; [[ -n "${INSTALL_ARCH}" ]] && echo " (arch=${INSTALL_ARCH})" || echo
+    echo "    Args: --jsonfile ${DIAG_GLOBAL_JSON} --install-dir ${DOTNET_INSTALL_DIR} --skip-non-versioned-files${INSTALL_ARCH:+ --architecture ${INSTALL_ARCH}}"
+    SECONDS=0
+    if [[ -n "${INSTALL_ARCH}" ]]; then
+      "${timeout_cmd[@]}" "${INSTALLER_SH}" --jsonfile "${DIAG_GLOBAL_JSON}" --install-dir "${DOTNET_INSTALL_DIR}" --architecture "${INSTALL_ARCH}" --skip-non-versioned-files || true
+    else
+      "${timeout_cmd[@]}" "${INSTALLER_SH}" --jsonfile "${DIAG_GLOBAL_JSON}" --install-dir "${DOTNET_INSTALL_DIR}" --skip-non-versioned-files || true
+    fi
+    echo "    dotnet-install completed in ${SECONDS}s"
+    rm -rf "${TMPDIR_DIAG}" || true
+  else
+    echo "WARN: ${DIAG_GLOBAL_JSON} not found; proceeding without pre-install. Arcade may fall back to .dotnet" >&2
+  fi
+
   pushd "${DIAG_ROOT}" >/dev/null
   ./build.sh -c "${CONFIG}" "${PASS_TO_DIAG[@]}"
   popd >/dev/null
@@ -153,6 +230,14 @@ if [[ -z "${EXT_LIB}" || ! -f "${EXT_LIB}" ]]; then
 fi
 
 echo "==> Configuring bridge (install -> ${BIN_DIR})"
+# Ensure Diagnostics toolset is used for any managed tooling needed during bridge configuration
+export DOTNET_MULTILEVEL_LOOKUP=0
+export DOTNET_INSTALL_DIR="${DIAG_ROOT}/.dotnet.${ARCH}"
+export DOTNET_ROOT="${DOTNET_INSTALL_DIR}"
+export PATH="${DOTNET_INSTALL_DIR}:${DOTNET_INSTALL_DIR}/tools:${PATH}"
+echo "==> Bridge toolset:"
+echo "    DOTNET_INSTALL_DIR=${DOTNET_INSTALL_DIR}"
+echo "    DOTNET_ROOT=${DOTNET_ROOT}"
 # Build CMake argument list safely
 CM_ARGS=(
   -S "${SRC_ROOT}"

@@ -7,18 +7,13 @@ gdbsos — GDB SOS plugin to make gdb doing .net debugging
 <img src="docs/gdbsos-demo.gif" alt="gdbsos .net debugging demo" width="1500"/>
 ## How to use
 
-- Get the binaries: download the latest Linux runtime tarball from Releases, and optionally the symbols tarball for debug info.
-	- Releases: https://github.com/oldzhu/gdbsos/releases (e.g., v0.1.0)
 - Extract the gdbsos tar to a folder you control (example: ~/gdbsos or any path you prefer).
 	- If you also downloaded the symbols tar (…symbols.tar.gz), extract it into the same folder.
 - In GDB, source the plugin and explore commands:
 	- source /path/to/sos.py
 	- sos help
-	- sos clrstack
 	or
 	- clrstack
-
-Notes
 - libsos.so discovery order at gdbsos:
 	1) $SOS_ROOT/libsos.so
 	2) ~/.dotnet/sos/libsos.so

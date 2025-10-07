@@ -29,7 +29,7 @@
 				"omnisharp.enableMsBuildLoadProjectsOnDemand": true,
 				"omnisharp.enableRoslynAnalyzers": true,
 				"omnisharp.enableEditorConfigSupport": true,
-				"omnisharp.enableAsyncCompletion": true,
+					"omnisharp.enableAsyncCompletion": true
 			}
 		}
 	},
@@ -41,9 +41,7 @@
   // This allows developers to just use 'dotnet build' on the command-line, and the local dotnet version will be used.
   // Add the global tools dir to the PATH so that globally installed tools will work
   "remoteEnv": {
-    "PATH": "${containerWorkspaceFolder}/src/diagnostics/.dotnet:${containerWorkspaceFolder}/src/diagnostics/.dotnet/tools:${containerEnv:PATH}",
-    "DOTNET_MULTILEVEL_LOOKUP": "0",
-    "DOTNET_ROOT": "${containerWorkspaceFolder}/src/diagnostics/.dotnet"
+		"DOTNET_MULTILEVEL_LOOKUP": "0"
   },
 
   // Comment out to connect as root instead. More info: https://aka.ms/vscode-remote/containers/non-root.

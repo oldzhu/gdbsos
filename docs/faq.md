@@ -191,3 +191,17 @@ For GC stress, tiering experiments, or multi-arch scenarios, extend the build sc
 ## Deploy options
 
 - Obsolete: historical deploy helpers that copied the bridge and Python files into the diagnostics artifacts/bin tree have been deprecated. The build no longer deploys to diagnostics; related CMake/script logic is commented out. Rely on SOS_ROOT or ~/.dotnet/sos for libsos.so; the gdbsos automatically co-locates the bridge with libsos when needed.
+
+## Contributing: toolsets and multi-arch builds
+
+- This repo uses per-submodule, per-arch .NET SDK toolsets to avoid conflicts when building in multiple dev containers:
+  - Diagnostics SDK: `src/diagnostics/.dotnet-x64` or `src/diagnostics/.dotnet-arm64`
+  - Runtime SDK: `src/runtime/.dotnet-x64` or `src/runtime/.dotnet-arm64`
+- The top-level `build.sh` sets `DOTNET_INSTALL_DIR` and `DOTNET_ROOT` (and updates `PATH`) right before invoking each submodule’s build. The devcontainer does not set a global `DOTNET_ROOT`.
+- This allows you to build x64 and arm64 concurrently in separate containers without sharing the same `.dotnet` folder.
+
+### Dev containers
+
+- Two services exist in `.devcontainer/docker-compose.yml`: `dev-amd64` and `dev-arm64`.
+- On WSL2 x86_64 hosts, `dev-arm64` uses QEMU via a one-shot `binfmt` init service that registers QEMU 10.0.14 at container start.
+- Rebuild the container if you change compose or Dockerfile; no rebuild needed for script-only changes.
