@@ -19,5 +19,8 @@ src/backup-2025-09-24/
 # test logs
 src/tests/gdb/logs/
 
+# qemu prepared artifacts
+src/tests/qemu/testspaces/
+
 # SOS stress log files
 StressLog.txt

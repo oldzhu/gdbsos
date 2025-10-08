@@ -1,0 +1,57 @@
+#cloud-config
+users:
+  - name: dev
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+ssh_pwauth: true
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - unzip
+  - gdb
+  - lldb
+  - openssh-server
+  - cloud-guest-utils  # provides growpart
+  - xfsprogs            # xfs_growfs if the image uses xfs
+growpart:
+  mode: auto
+  devices: ['/']
+  ignore_growroot_disabled: false
+resize_rootfs: true
+runcmd:
+  - |
+    set -eux
+    . /etc/lsb-release || true
+    case "${DISTRIB_CODENAME:-unknown}" in
+      jammy)
+        curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb -o /tmp/packages-microsoft-prod.deb ;;
+      noble)
+        curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -o /tmp/packages-microsoft-prod.deb ;;
+      *)
+        # default to jammy repo if unknown
+        curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb -o /tmp/packages-microsoft-prod.deb ;;
+    esac
+  - dpkg -i /tmp/packages-microsoft-prod.deb
+  - apt-get update
+  - apt-get install -y dotnet-sdk-8.0
+  - sysctl -w kernel.core_pattern=core
+  # Allow empty password login for SSH (lab only) and remove dev's password to make it empty
+  - sed -i -e 's/^#*PasswordAuthentication .*/PasswordAuthentication yes/' -e 's/^#*PermitEmptyPasswords .*/PermitEmptyPasswords yes/' /etc/ssh/sshd_config
+  - passwd -d dev || true
+  - systemctl restart ssh || systemctl restart sshd || true
+  - echo 'host    /workspaces  9p  trans=virtio,version=9p2000.L,msize=262144,cache=mmap,uid=1000,gid=1000,ro=0,_netdev  0  0' >> /etc/fstab
+  - mkdir -p /workspaces
+  - mount -a || true
+bootcmd:
+  # Additional guard in case growpart didn't trigger: try growing the main root device (vda) first partition
+  - [ bash, -c, 'command -v growpart >/dev/null 2>&1 && growpart /dev/vda 1 || true' ]
+  - [ bash, -c, 'if mountpoint -q /; then FSTYPE=$(findmnt -n -o FSTYPE /); SRC=$(findmnt -n -o SOURCE /); if [ "$FSTYPE" = xfs ]; then xfs_growfs / || true; else resize2fs "$SRC" || true; fi; fi' ]
+write_files:
+  - path: /etc/sysctl.d/99-corepattern.conf
+    content: |
+      kernel.core_pattern=core
+    owner: root:root
+    permissions: '0644'

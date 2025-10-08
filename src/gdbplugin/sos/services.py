@@ -380,6 +380,65 @@ class GdbServices:
         return self._ref
 
     # --- Helpers ---
+    def _detect_arch_name(self) -> str:
+        """Best-effort architecture name from GDB or OS. Examples: 'i386:x86-64', 'aarch64'."""
+        # 1) GDB current frame architecture
+        try:
+            fr = gdb.newest_frame()
+            if fr is not None:
+                arch = fr.architecture()
+                name = getattr(arch, 'name', None)
+                if name:
+                    return str(name).lower()
+        except Exception:
+            pass
+        # 2) 'show architecture' output
+        try:
+            out = gdb.execute('show architecture', to_string=True) or ''
+            low = out.lower()
+            # try to extract the current arch in parens
+            # e.g. "The target architecture is set automatically (currently aarch64)"
+            m = re.search(r"currently\s+([^\)\n]+)\)", low)
+            if m:
+                return m.group(1).strip()
+        except Exception:
+            pass
+        # 3) OS uname
+        try:
+            return (os.uname().machine or '').lower()
+        except Exception:
+            return ''
+
+    def _detect_machine_type(self) -> int:
+        """Return IMAGE_FILE_MACHINE_* constant based on arch; support x64 and arm64."""
+        name = self._detect_arch_name()
+        if 'aarch64' in name or 'arm64' in name:
+            return IMAGE_FILE_MACHINE_ARM64
+        # common x64 names
+        if 'x86-64' in name or 'x86_64' in name or 'amd64' in name or 'i386:x86-64' in name:
+            return IMAGE_FILE_MACHINE_AMD64
+        # Fallback: infer from pointer size
+        try:
+            if ctypes.sizeof(ctypes.c_void_p) == 8:
+                return IMAGE_FILE_MACHINE_AMD64
+        except Exception:
+            pass
+        return IMAGE_FILE_MACHINE_AMD64
+
+    def _detect_pointer_size(self) -> int:
+        try:
+            # Prefer GDB type system if available
+            t = gdb.lookup_type('void').pointer()
+            sz = int(getattr(t, 'sizeof', 0) or 0)
+            if sz:
+                return sz
+        except Exception:
+            pass
+        try:
+            return ctypes.sizeof(ctypes.c_void_p)
+        except Exception:
+            return 8
+
     def _get_pid(self):
         try:
             inf = gdb.selected_inferior()
@@ -1093,7 +1152,7 @@ class GdbServices:
     def _dt_get_machine_type(self, this_ptr, machine_ptr):
         try:
             if machine_ptr:
-                machine_ptr.contents.value = IMAGE_FILE_MACHINE_AMD64
+                machine_ptr.contents.value = self._detect_machine_type()
             return 0
         except Exception:
             return 0x80004005
@@ -1101,7 +1160,7 @@ class GdbServices:
     def _dt_get_pointer_size(self, this_ptr, size_ptr):
         try:
             if size_ptr:
-                size_ptr.contents.value = 8
+                size_ptr.contents.value = self._detect_pointer_size()
             return 0
         except Exception:
             return 0x80004005
@@ -1737,7 +1796,11 @@ class GdbServices:
     def lldb_get_processor_type(self, this_ptr, type_ptr):
         trace("call into lldb_get_processor_type")
         if type_ptr:
-            type_ptr.contents.value = IMAGE_FILE_MACHINE_AMD64
+            try:
+                type_ptr.contents.value = self._detect_machine_type()
+            except Exception:
+                # Default to AMD64 if detection fails
+                type_ptr.contents.value = IMAGE_FILE_MACHINE_AMD64
         return 0
 
     def lldb_execute(self, this_ptr, outctl, command, flags):
@@ -2489,27 +2552,47 @@ class GdbServices:
                 pass
             if frame is None:
                 return 0x80004005
-            # Fill minimal AMD64 DT_CONTEXT
-            # Write ContextFlags at offset matching DT_CONTEXT layout: first 4 bytes
+            # Arch-specific handling
+            mtype = self._detect_machine_type()
             ctypes.memset(context, 0, contextSize)
-            # For SOS, any non-zero flags that include CONTROL|INTEGER are acceptable
-            CONTEXT_AMD64 = 0x00100000
-            CONTEXT_CONTROL = 0x00000001
-            CONTEXT_INTEGER = 0x00000002
-            flags = CONTEXT_AMD64 | CONTEXT_CONTROL | CONTEXT_INTEGER
-            ctypes.cast(context, ctypes.POINTER(ULONG)).contents.value = flags
-            self._fill_amd64_dt_context(frame, flags, ctypes.cast(context, ctypes.c_void_p))
+            if mtype == IMAGE_FILE_MACHINE_AMD64:
+                # Fill minimal AMD64 DT_CONTEXT
+                CONTEXT_AMD64 = 0x00100000
+                CONTEXT_CONTROL = 0x00000001
+                CONTEXT_INTEGER = 0x00000002
+                flags = CONTEXT_AMD64 | CONTEXT_CONTROL | CONTEXT_INTEGER
+                ctypes.cast(context, ctypes.POINTER(ULONG)).contents.value = flags
+                self._fill_amd64_dt_context(frame, flags, ctypes.cast(context, ctypes.c_void_p))
+            else:
+                # For ARM64, we don't currently marshal a Windows-style CONTEXT.
+                # Leave buffer zeroed and return E_NOTIMPL so callers can fall back.
+                try:
+                    # Still update our cached offsets below
+                    pass
+                except Exception:
+                    pass
             # Update cache for this sysid so offset getters can avoid using gdb APIs
             try:
-                rip = int(frame.read_register('rip'))
-                rsp = int(frame.read_register('rsp'))
-                rbp = int(frame.read_register('rbp'))
+                # Cross-arch register names
+                def _reg(name_list):
+                    for nm in name_list:
+                        try:
+                            return int(frame.read_register(nm))
+                        except Exception:
+                            continue
+                    return 0
+                rip = _reg(['rip', 'pc'])
+                rsp = _reg(['rsp', 'sp'])
+                rbp = _reg(['rbp', 'fp', 'x29'])
                 self._context_cache[sysId] = {'rip': rip, 'rsp': rsp, 'rbp': rbp}
                 # Remember current thread sysid
                 self._current_thread_sysid = sysId
             except Exception:
                 pass
-            return 0
+            if mtype == IMAGE_FILE_MACHINE_AMD64:
+                return 0
+            else:
+                return 0x80004001
         except Exception as ex:
             trace(f"lldb_get_thread_context_by_system_id error: {ex}")
             return 0x80004005
@@ -2521,10 +2604,23 @@ class GdbServices:
     def lldb_get_instruction_offset(self, this_ptr, offset_ptr):
         trace("call into lldb_get_instruction_offset")
         try:
-            if offset_ptr and self._current_thread_sysid in self._context_cache:
-                rip = self._context_cache[self._current_thread_sysid].get('rip', 0)
-                offset_ptr.contents.value = ctypes.c_uint64(rip).value
-                return 0
+            if offset_ptr:
+                rip = 0
+                if self._current_thread_sysid in self._context_cache:
+                    rip = self._context_cache[self._current_thread_sysid].get('rip', 0)
+                if not rip:
+                    try:
+                        fr = gdb.newest_frame()
+                        if fr is not None:
+                            try:
+                                rip = int(fr.read_register('rip'))
+                            except Exception:
+                                rip = int(fr.read_register('pc'))
+                    except Exception:
+                        rip = 0
+                if rip:
+                    offset_ptr.contents.value = ctypes.c_uint64(rip).value
+                    return 0
         except Exception:
             pass
         return 0x80004005
@@ -2532,10 +2628,23 @@ class GdbServices:
     def lldb_get_stack_offset(self, this_ptr, offset_ptr):
         trace("call into lldb_get_stack_offset")
         try:
-            if offset_ptr and self._current_thread_sysid in self._context_cache:
-                rsp = self._context_cache[self._current_thread_sysid].get('rsp', 0)
-                offset_ptr.contents.value = ctypes.c_uint64(rsp).value
-                return 0
+            if offset_ptr:
+                rsp = 0
+                if self._current_thread_sysid in self._context_cache:
+                    rsp = self._context_cache[self._current_thread_sysid].get('rsp', 0)
+                if not rsp:
+                    try:
+                        fr = gdb.newest_frame()
+                        if fr is not None:
+                            try:
+                                rsp = int(fr.read_register('rsp'))
+                            except Exception:
+                                rsp = int(fr.read_register('sp'))
+                    except Exception:
+                        rsp = 0
+                if rsp:
+                    offset_ptr.contents.value = ctypes.c_uint64(rsp).value
+                    return 0
         except Exception:
             pass
         return 0x80004005
@@ -2543,10 +2652,27 @@ class GdbServices:
     def lldb_get_frame_offset(self, this_ptr, offset_ptr):
         trace("call into lldb_get_frame_offset")
         try:
-            if offset_ptr and self._current_thread_sysid in self._context_cache:
-                rbp = self._context_cache[self._current_thread_sysid].get('rbp', 0)
-                offset_ptr.contents.value = ctypes.c_uint64(rbp).value
-                return 0
+            if offset_ptr:
+                rbp = 0
+                if self._current_thread_sysid in self._context_cache:
+                    rbp = self._context_cache[self._current_thread_sysid].get('rbp', 0)
+                if not rbp:
+                    try:
+                        fr = gdb.newest_frame()
+                        if fr is not None:
+                            # Try common frame-pointer names across arch
+                            for nm in ('rbp', 'fp', 'x29'):
+                                try:
+                                    rbp = int(fr.read_register(nm))
+                                    if rbp:
+                                        break
+                                except Exception:
+                                    continue
+                    except Exception:
+                        rbp = 0
+                if rbp:
+                    offset_ptr.contents.value = ctypes.c_uint64(rbp).value
+                    return 0
         except Exception:
             pass
         return 0x80004005
