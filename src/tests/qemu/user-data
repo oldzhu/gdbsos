@@ -42,8 +42,8 @@ runcmd:
   - sed -i -e 's/^#*PasswordAuthentication .*/PasswordAuthentication yes/' -e 's/^#*PermitEmptyPasswords .*/PermitEmptyPasswords yes/' /etc/ssh/sshd_config
   - passwd -d dev || true
   - systemctl restart ssh || systemctl restart sshd || true
-  - echo 'host    /workspaces  9p  trans=virtio,version=9p2000.L,msize=262144,cache=mmap,uid=1000,gid=1000,ro=0,_netdev  0  0' >> /etc/fstab
-  - mkdir -p /workspaces
+  - echo 'host    /workspaces/gdbsos  9p  trans=virtio,version=9p2000.L,msize=262144,cache=mmap,uid=1000,gid=1000,ro=0,_netdev  0  0' >> /etc/fstab
+  - mkdir -p /workspaces /workspaces/gdbsos
   - mount -a || true
 bootcmd:
   # Additional guard in case growpart didn't trigger: try growing the main root device (vda) first partition

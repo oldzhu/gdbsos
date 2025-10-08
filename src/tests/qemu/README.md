@@ -7,7 +7,7 @@ This guide sets up a full-system ARM64 Ubuntu VM under QEMU to test our aarch64 
 - .NET 8 SDK for arm64
 - gdb and lldb
 - SSH access via host port 2222
-- A 9p-mounted shared folder mapping the repo root into the VM at `/workspaces`
+- A 9p-mounted shared folder mapping the repo root into the VM at `/workspaces/gdbsos`
 
 > Note: Emulation (TCG) is CPU-only and slow. For faster runs, use native arm64 or an arm64 VM on arm64 hardware.
 
@@ -94,7 +94,7 @@ If you need to make the helper executable: `chmod +x make-seed.sh run.sh`.
 
 Notes:
 - Adjust `-smp` and `-m` according to your host. CPU emulation is slow; 2 cores and 2GB also work for basic testing.
-- `-virtfs` exports the host repo root at `/workspaces/gdbsos`. Inside the VM it will be mounted at `/workspaces` by cloud-init (via `/etc/fstab`) if available at boot. If not mounted, see the manual mount step below.
+- `-virtfs` exports the host repo root at `~/gdbsos`. Inside the VM it will be mounted at `/workspaces/gdbsos` by cloud-init (via `/etc/fstab`) if available at boot. If not mounted, see the manual mount step below.
 - If your firmware is installed under a different path (e.g., `/usr/share/edk2/aarch64/QEMU_EFI.fd` on some distros), set `BIOS` env var when calling `run.sh`:
 
   BIOS=/path/to/QEMU_EFI.fd ./run.sh jammy-server-cloudimg-arm64.img seed.iso
@@ -109,10 +109,10 @@ SSH in when its ready:
 
   ssh -p 2222 dev@127.0.0.1
 
-If the `/workspaces` mount is missing, mount it manually:
+If the `/workspaces/gdbsos` mount is missing, mount it manually:
 
-  sudo mkdir -p /workspaces
-  sudo mount -t 9p host /workspaces -o trans=virtio,version=9p2000.L,msize=262144,cache=mmap
+  sudo mkdir -p /workspaces/gdbsos
+  sudo mount -t 9p host /workspaces/gdbsos -o trans=virtio,version=9p2000.L,msize=262144,cache=mmap
 
 ## 6) Verify tools
 Run inside the VM:
@@ -124,13 +124,13 @@ Run inside the VM:
 ## 7) Test our GDB + SOS inside the VM
 - Navigate to the shared repo:
 
-  cd /workspaces
+  cd /workspaces/gdbsos
 
 - Build (inside VM) or copy your arm64 artifacts here.
 - Use GDB as usual (no ptrace limitations in full-system emulation):
 
   gdb --args /path/to/your/arm64/app
-  (gdb) source /workspaces/src/gdbplugin/sos/sos.py
+  (gdb) source /workspaces/gdbsos/artifacts/bin/linux.arm64.Release/sos.py
   (gdb) bpmd TestDebuggee.dll Test.DumpIL
   (gdb) run
 
