@@ -169,24 +169,44 @@ def generate_report(summary_file):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gdb', default='gdb')
-    # Default plugin path now points to repository-level publish artifacts. We try Debug first, then Release.
+    # Default plugin path now points to repository-level publish artifacts.
+    # We try arch-specific Debug first, then Release.
     _script_dir = os.path.dirname(__file__)
     _repo_root = os.path.abspath(os.path.join(_script_dir, '../../..'))
     _default_plugin = None
+    _arch = 'x64'
+    try:
+        import platform
+        _m = platform.machine().lower()
+        if 'aarch64' in _m or 'arm64' in _m:
+            _arch = 'arm64'
+        elif 'x86_64' in _m or 'amd64' in _m:
+            _arch = 'x64'
+    except Exception:
+        pass
     for _cand in [
-        os.path.join(_repo_root, 'artifacts', 'bin', 'linux.x64.Debug', 'sos.py'),
-        os.path.join(_repo_root, 'artifacts', 'bin', 'linux.x64.Release', 'sos.py'),
+        os.path.join(_repo_root, 'artifacts', 'bin', f'linux.{_arch}.Debug', 'sos.py'),
+        os.path.join(_repo_root, 'artifacts', 'bin', f'linux.{_arch}.Release', 'sos.py'),
     ]:
         if os.path.isfile(_cand):
             _default_plugin = _cand
             break
-    if _default_plugin is None:
-        # Fallback to previous (likely stale) path so error message in logs is explanatory
-        _default_plugin = os.path.abspath(os.path.join(_script_dir, '../../src/diagnostics/artifacts/bin/current/sos.py'))
     parser.add_argument('--plugin', default=_default_plugin)
     parser.add_argument('--host', required=True)
     parser.add_argument('--assembly', required=True)
-    parser.add_argument('--logdir', default=os.path.join(os.path.dirname(__file__), 'logs'))
+    # Default logdir to arch-specific subfolder (logs/x64 or logs/arm64)
+    _arch_dir = _arch
+    try:
+        if not _arch_dir:
+            import platform as _pf
+            _m2 = _pf.machine().lower()
+            if 'aarch64' in _m2 or 'arm64' in _m2:
+                _arch_dir = 'arm64'
+            elif 'x86_64' in _m2 or 'amd64' in _m2:
+                _arch_dir = 'x64'
+    except Exception:
+        pass
+    parser.add_argument('--logdir', default=os.path.join(os.path.dirname(__file__), 'logs', _arch_dir or 'unknown'))
     parser.add_argument('--timeout', default=120, type=int)
     parser.add_argument('--regex', default=r't_cmd_.*\\.py')
     parser.add_argument('--repeat', default=1, type=int)

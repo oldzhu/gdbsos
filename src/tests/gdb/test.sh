@@ -3,9 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 
-LOGDIR="${SCRIPT_DIR}/logs"
-mkdir -p "${LOGDIR}"
-
 GDB_BIN=${GDB_BIN:-gdb}
 
 # Ensure JIT memory protections are compatible with bpmd/JIT breakpoints under test.
@@ -28,6 +25,10 @@ case "${UNAME_M}" in
   ppc64le)  ARCH="ppc64le" ;;
   *)        ARCH="${UNAME_M}" ;;
 esac
+
+# Write logs under arch-specific directory (e.g., logs/x64 or logs/arm64)
+LOGDIR="${SCRIPT_DIR}/logs/${ARCH}"
+mkdir -p "${LOGDIR}"
 
 # If PLUGIN_PATH not provided, attempt to auto-detect sos.py in publish folders for this arch
 if [[ -z "${PLUGIN_PATH:-}" ]]; then
@@ -66,7 +67,8 @@ if [[ -z "${ASSEMBLY:-}" ]]; then
   done
 fi
 
-export SOS_ROOT="${REPO_ROOT}/src/diagnostics/artifacts/bin/current"
+# Default SOS_ROOT to arch-specific Release unless caller overrides
+export SOS_ROOT="${SOS_ROOT:-${REPO_ROOT}/src/diagnostics/artifacts/bin/linux.${ARCH}.Release}"
 
 ASSEMBLY=${ASSEMBLY:-"/path/to/TestDebuggee.dll"}
 TIMEOUT=${TIMEOUT:-120}

@@ -38,27 +38,22 @@ if [[ -d "${REPO_ROOT}/src/diagnostics/artifacts/bin/linux.${ARCH}.Release" ]]; 
   CONFIG_DIR="linux.${ARCH}.Release"
 fi
 
-# Diagnostics symlink: artifacts/bin/current -> artifacts/bin/linux.<arch>.<cfg>
-DIAG_BIN_ROOT="${REPO_ROOT}/src/diagnostics/artifacts/bin"
-if [[ -d "${DIAG_BIN_ROOT}" ]]; then
-  TARGET="${DIAG_BIN_ROOT}/${CONFIG_DIR}"
-  LINK="${DIAG_BIN_ROOT}/current"
-  if [[ -d "${TARGET}" ]]; then
-    ln -sfn "${TARGET}" "${LINK}"
-  fi
-fi
+# [Removed] 'current' symlink (multi-arch safe):
+# We no longer create or update artifacts/bin/current because it can flip between
+# different arch/config combinations and cause confusion. Scripts should use explicit
+# linux.<arch>.<config> paths instead (defaulting to Release). The previous code was:
+#   DIAG_BIN_ROOT="${REPO_ROOT}/src/diagnostics/artifacts/bin"
+#   TARGET="${DIAG_BIN_ROOT}/${CONFIG_DIR}"
+#   LINK="${DIAG_BIN_ROOT}/current"
+#   ln -sfn "${TARGET}" "${LINK}"
 
-# Bridge symlink: artifacts/bin/current -> artifacts/bin/linux.<arch>.<cfg>
-BRIDGE_BIN_ROOT="${REPO_ROOT}/artifacts/bin"
-if [[ -d "${BRIDGE_BIN_ROOT}/linux.${ARCH}.Release" ]]; then
-  ln -sfn "${BRIDGE_BIN_ROOT}/linux.${ARCH}.Release" "${BRIDGE_BIN_ROOT}/current"
-elif [[ -d "${BRIDGE_BIN_ROOT}/linux.${ARCH}.Debug" ]]; then
-  ln -sfn "${BRIDGE_BIN_ROOT}/linux.${ARCH}.Debug" "${BRIDGE_BIN_ROOT}/current"
-fi
+# [Removed] 'current' symlink for bridge as well; prefer explicit linux.<arch>.<config>.
+# Previous code updated ${REPO_ROOT}/artifacts/bin/current to Release/Debug for this arch.
 
-# Export minimal variables; sos.py will load co-located libs and .py from diagnostics/bin/current.
+# Export minimal variables; default SOS_ROOT to arch-specific Release unless overridden.
 export DIAGNOSTICS_ROOT="${REPO_ROOT}/src/diagnostics"
-export SOS_ROOT="${DIAGNOSTICS_ROOT}/artifacts/bin/current"
+DIAG_BIN_ROOT="${DIAGNOSTICS_ROOT}/artifacts/bin"
+export SOS_ROOT="${SOS_ROOT:-${DIAG_BIN_ROOT}/linux.${ARCH}.Release}"
 
 # Ensure JIT memory protections are compatible with bpmd/JIT breakpoints under test.
 export DOTNET_EnableWriteXorExecute=0

@@ -236,13 +236,8 @@ if [[ ${SKIP_DIAG} -eq 0 ]]; then
     eval "exec ${DIAG_LOCK_FD}>&-" || true
   fi
 
-  # Update diagnostics 'current' symlink to the built configuration
-  DIAG_BIN_ROOT="${DIAG_ROOT}/artifacts/bin"
-  DIAG_CFG_DIR="${DIAG_BIN_ROOT}/${OS}.${ARCH}.${CONFIG}"
-  if [[ -d "${DIAG_CFG_DIR}" ]]; then
-    ln -sfn "${DIAG_CFG_DIR}" "${DIAG_BIN_ROOT}/current"
-    echo "==> diagnostics bin symlink: ${DIAG_BIN_ROOT}/current -> ${DIAG_CFG_DIR}"
-  fi
+  # Note: Do not create artifacts/bin/current symlink; multi-arch environments
+  # should reference explicit linux.<arch>.<config> directories.
 else
   echo "==> Skipping diagnostics build as requested"
 fi
@@ -338,13 +333,8 @@ cmake --build "${OBJ_DIR}" -- -j"${JOBS}"
 echo "==> Installing bridge -> ${BIN_DIR}"
 cmake --install "${OBJ_DIR}"
 
-# Update bridge 'current' symlink to the built configuration
-BRIDGE_BIN_ROOT="${REPO_ROOT}/artifacts/bin"
-BRIDGE_CFG_DIR="${BRIDGE_BIN_ROOT}/${OS}.${ARCH}.${CONFIG}"
-if [[ -d "${BRIDGE_CFG_DIR}" ]]; then
-  ln -sfn "${BRIDGE_CFG_DIR}" "${BRIDGE_BIN_ROOT}/current"
-  echo "==> bridge bin symlink: ${BRIDGE_BIN_ROOT}/current -> ${BRIDGE_CFG_DIR}"
-fi
+# Note: Do not create bridge artifacts/bin/current symlink; consumers should use
+# explicit linux.<arch>.<config> directories.
 
 echo "==> Done"
 echo "Artifacts in: ${BIN_DIR}"
