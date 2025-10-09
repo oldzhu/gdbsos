@@ -2033,73 +2033,149 @@ class GdbServices:
             adv = 1
             faddr = int(offset)
             saved_flavor = None
+            # Detect machine type (for arch-specific handling)
+            try:
+                mtype = self._detect_machine_type()
+            except Exception:
+                mtype = IMAGE_FILE_MACHINE_AMD64
+            is_amd64 = (mtype == IMAGE_FILE_MACHINE_AMD64)
+            is_arm64 = (mtype == IMAGE_FILE_MACHINE_ARM64)
+
+            # Optional: prefer GDB's Python disassemble API when enabled (default off)
+            # SOS_GDB_USE_PY_DISASM=1|true|yes|on -> use Python API
+            use_py_disasm = False
+            try:
+                use_py_disasm = (os.getenv('SOS_GDB_USE_PY_DISASM', '0') or '0').strip().lower() in ('1','true','yes','on')
+            except Exception:
+                use_py_disasm = False
 
             # Save and temporarily switch to Intel flavor to avoid '%' registers (printf hazards)
-            try:
-                show = gdb.execute("show disassembly-flavor", to_string=True)
-                low = (show or "").lower()
-                if "intel" in low:
-                    saved_flavor = "intel"
-                elif "att" in low:
-                    saved_flavor = "att"
-                else:
-                    saved_flavor = None
-            except Exception:
-                saved_flavor = None
-            try:
-                if saved_flavor != "intel":
-                    gdb.execute("set disassembly-flavor intel", to_string=True)
-            except Exception:
-                pass
-
-            try:
-                # Probe two instructions so we can compute the next address reliably
-                out2 = gdb.execute(f"x/2i 0x{int(offset):x}", to_string=True)
-                lines = [ln for ln in (out2 or '').splitlines() if ln.strip()]
-                if lines:
-                    first = lines[0].strip()
-                    sec = lines[1].strip() if len(lines) > 1 else None
-                    # Extract text for first instruction
-                    parts = first.split('\t', 1)
-                    if len(parts) == 2:
-                        text = parts[1]
-                    else:
-                        cidx = first.find(':')
-                        text = first[cidx+1:].strip() if cidx >= 0 else first
-                    # Compute instruction length using numeric addresses
-                    try:
-                        faddr_str = first.split(':', 1)[0].strip()
-                        faddr = int(faddr_str, 16) if faddr_str.startswith('0x') else int(faddr_str, 16)
-                        if sec:
-                            saddr_str = sec.split(':', 1)[0].strip()
-                            saddr = int(saddr_str, 16) if saddr_str.startswith('0x') else int(saddr_str, 16)
-                            if saddr > faddr:
-                                adv = max(1, saddr - faddr)
-                    except Exception:
-                        adv = max(1, adv)
-                else:
-                    # Fallback to a single instruction
-                    out1 = gdb.execute(f"x/1i 0x{int(offset):x}", to_string=True)
-                    if out1:
-                        line = out1.strip().splitlines()[0]
-                        parts = line.split('\t', 1)
-                        if len(parts) == 2:
-                            text = parts[1]
-                        else:
-                            cidx = line.find(':')
-                            text = line[cidx+1:].strip() if cidx >= 0 else line
-            except Exception as ex:
+            # Only relevant on x86/x64; skip on ARM64 or when using Python API
+            if is_amd64 and not use_py_disasm:
                 try:
-                    trace_cat('disasm', f"[disasm] gdb disassemble error: {ex}")
+                    show = gdb.execute("show disassembly-flavor", to_string=True)
+                    low = (show or "").lower()
+                    if "intel" in low:
+                        saved_flavor = "intel"
+                    elif "att" in low:
+                        saved_flavor = "att"
+                    else:
+                        saved_flavor = None
+                except Exception:
+                    saved_flavor = None
+                try:
+                    if saved_flavor != "intel":
+                        gdb.execute("set disassembly-flavor intel", to_string=True)
                 except Exception:
                     pass
 
+            # Disassemble one instruction using preferred path
+            used_python_api = False
+            if use_py_disasm:
+                try:
+                    fr = gdb.newest_frame()
+                    arch = fr.architecture() if fr is not None else None
+                    dis_fn = getattr(arch, 'disassemble', None) if arch is not None else None
+                    if callable(dis_fn):
+                        # Request a small range; we'll take the first entry
+                        res = dis_fn(faddr, faddr + 64)
+                        if isinstance(res, list) and len(res) > 0:
+                            entry = res[0]
+                            # Text field name varies across GDB versions ('asm' is common)
+                            t = None
+                            for key in ('asm', 'insn', 'opcodes', 'text'):
+                                if isinstance(entry.get(key, None), str) and entry.get(key):
+                                    t = entry.get(key)
+                                    break
+                            text = t if t is not None else text
+                            # Prefer explicit instruction length/size if provided; else compute from next addr
+                            a = entry.get('length', None)
+                            if not isinstance(a, int) or a <= 0:
+                                a = entry.get('size', None)
+                            if not isinstance(a, int) or a <= 0:
+                                try:
+                                    if len(res) > 1:
+                                        a = int(res[1].get('addr', faddr)) - int(entry.get('addr', faddr))
+                                except Exception:
+                                    a = None
+                            if not isinstance(a, int) or a <= 0:
+                                a = 4 if is_arm64 else 1
+                            adv = max(1, int(a))
+                            # Update faddr in case 'addr' is normalized by GDB
+                            try:
+                                faddr = int(entry.get('addr', faddr))
+                            except Exception:
+                                pass
+                            used_python_api = True
+                except Exception as ex:
+                    try:
+                        trace_cat('disasm', f"[disasm] python API disassemble error: {ex}")
+                    except Exception:
+                        pass
+
+            if not used_python_api:
+                try:
+                    if is_arm64:
+                        # On AArch64, instructions are fixed 4 bytes. Use a single-instruction decode for text.
+                        out1 = gdb.execute(f"x/1i 0x{int(offset):x}", to_string=True)
+                        if out1:
+                            line = out1.strip().splitlines()[0]
+                            parts = line.split('\t', 1)
+                            if len(parts) == 2:
+                                text = parts[1]
+                            else:
+                                cidx = line.find(':')
+                                text = line[cidx+1:].strip() if cidx >= 0 else line
+                        adv = 4
+                    else:
+                        # Probe two instructions so we can compute the next address reliably
+                        out2 = gdb.execute(f"x/2i 0x{int(offset):x}", to_string=True)
+                        lines = [ln for ln in (out2 or '').splitlines() if ln.strip()]
+                        if lines:
+                            first = lines[0].strip()
+                            sec = lines[1].strip() if len(lines) > 1 else None
+                            # Extract text for first instruction
+                            parts = first.split('\t', 1)
+                            if len(parts) == 2:
+                                text = parts[1]
+                            else:
+                                cidx = first.find(':')
+                                text = first[cidx+1:].strip() if cidx >= 0 else first
+                            # Compute instruction length using numeric addresses
+                            try:
+                                faddr_str = first.split(':', 1)[0].strip()
+                                faddr = int(faddr_str, 16) if faddr_str.startswith('0x') else int(faddr_str, 16)
+                                if sec:
+                                    saddr_str = sec.split(':', 1)[0].strip()
+                                    saddr = int(saddr_str, 16) if saddr_str.startswith('0x') else int(saddr_str, 16)
+                                    if saddr > faddr:
+                                        adv = max(1, saddr - faddr)
+                            except Exception:
+                                adv = max(1, adv)
+                        else:
+                            # Fallback to a single instruction
+                            out1 = gdb.execute(f"x/1i 0x{int(offset):x}", to_string=True)
+                            if out1:
+                                line = out1.strip().splitlines()[0]
+                                parts = line.split('\t', 1)
+                                if len(parts) == 2:
+                                    text = parts[1]
+                                else:
+                                    cidx = line.find(':')
+                                    text = line[cidx+1:].strip() if cidx >= 0 else line
+                except Exception as ex:
+                    try:
+                        trace_cat('disasm', f"[disasm] gdb disassemble error: {ex}")
+                    except Exception:
+                        pass
+
             # Restore disassembly flavor if we changed it
-            try:
-                if saved_flavor and saved_flavor != "intel":
-                    gdb.execute(f"set disassembly-flavor {saved_flavor}", to_string=True)
-            except Exception:
-                pass
+            if is_amd64 and not use_py_disasm:
+                try:
+                    if saved_flavor and saved_flavor != "intel":
+                        gdb.execute(f"set disassembly-flavor {saved_flavor}", to_string=True)
+                except Exception:
+                    pass
 
             # Escape % to avoid downstream printf formatting in SOS
             if text and ("%" in text):
@@ -2129,10 +2205,12 @@ class GdbServices:
                 want_bytes = True
 
             # Canonicalize RIP displacement like "rip+0xfffffffffff85ca7" to "rip - 0x7a359"
-            try:
-                canonical_rip = (os.getenv('SOS_GDB_DISASM_CANONICAL_RIP', '1') or '1').lower() in ('1','true','yes','on')
-            except Exception:
-                canonical_rip = True
+            canonical_rip = False
+            if is_amd64:
+                try:
+                    canonical_rip = (os.getenv('SOS_GDB_DISASM_CANONICAL_RIP', '1') or '1').lower() in ('1','true','yes','on')
+                except Exception:
+                    canonical_rip = True
             if text and canonical_rip:
                 try:
                     pattern = re.compile(r"\brip\s*\+\s*0x([0-9a-fA-F]+)\b")
