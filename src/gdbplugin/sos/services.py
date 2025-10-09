@@ -387,10 +387,39 @@ class GdbServices:
             fr = gdb.newest_frame()
             if fr is not None:
                 arch = fr.architecture()
-                name = getattr(arch, 'name', None)
-                if name:
-                    return str(name).lower()
+                name_attr = getattr(arch, 'name', None)
+                val = None
+                if callable(name_attr):
+                    try:
+                        val = name_attr()
+                    except Exception:
+                        val = None
+                else:
+                    val = name_attr
+                if isinstance(val, (bytes, bytearray)):
+                    try:
+                        val = val.decode('utf-8', 'ignore')
+                    except Exception:
+                        val = str(val)
+                if isinstance(val, str):
+                    sval = val.strip().lower()
+                    # Filter out accidental method repr like '<built-in method name ...>'
+                    if not sval.startswith('<built-in method') and len(sval) > 0:
+                        try:
+                            trace_cat('arch', f"[detect] frame.architecture().name()={sval}")
+                        except Exception:
+                            pass
+                        return sval
+                # If we get here, log what we saw for troubleshooting and fall through
+                try:
+                    trace_cat('arch', f"[detect] frame.architecture().name invalid: {val}")
+                except Exception:
+                    pass
         except Exception:
+            try:
+                trace_cat('arch', "[detect] frame.architecture().name unavailable")
+            except Exception:
+                pass
             pass
         # 2) 'show architecture' output
         try:
@@ -400,27 +429,83 @@ class GdbServices:
             # e.g. "The target architecture is set automatically (currently aarch64)"
             m = re.search(r"currently\s+([^\)\n]+)\)", low)
             if m:
+                try:
+                    trace_cat('arch', f"[detect] show architecture -> {m.group(1).strip()}")
+                except Exception:
+                    pass
                 return m.group(1).strip()
         except Exception:
+            try:
+                trace_cat('arch', "[detect] 'show architecture' failed")
+            except Exception:
+                pass
             pass
         # 3) OS uname
         try:
-            return (os.uname().machine or '').lower()
+            um = (os.uname().machine or '').lower()
+            try:
+                trace_cat('arch', f"[detect] os.uname().machine={um}")
+            except Exception:
+                pass
+            return um
         except Exception:
             return ''
 
     def _detect_machine_type(self) -> int:
         """Return IMAGE_FILE_MACHINE_* constant based on arch; support x64 and arm64."""
+        # Allow forcing via env for troubleshooting: SOS_FORCE_MACHINE_TYPE=arm64|amd64 (or SOS_FORCE_ARCH)
+        try:
+            override = os.environ.get('SOS_FORCE_MACHINE_TYPE') or os.environ.get('SOS_FORCE_ARCH')
+        except Exception:
+            override = None
+        if override:
+            o = (override or '').strip().lower()
+            if o in ('arm64', 'aarch64'):
+                try:
+                    trace_cat('arch', f"[detect] override -> ARM64 via {override}")
+                except Exception:
+                    pass
+                return IMAGE_FILE_MACHINE_ARM64
+            if o in ('amd64', 'x64', 'x86_64', 'x86-64'):
+                try:
+                    trace_cat('arch', f"[detect] override -> AMD64 via {override}")
+                except Exception:
+                    pass
+                return IMAGE_FILE_MACHINE_AMD64
+            try:
+                trace_cat('arch', f"[detect] override unrecognized: {override}")
+            except Exception:
+                pass
         name = self._detect_arch_name()
+        try:
+            trace_cat('arch', f"[detect] name='{name}'")
+        except Exception:
+            pass
         if 'aarch64' in name or 'arm64' in name:
+            try:
+                trace_cat('arch', "[detect] -> ARM64 (name match)")
+            except Exception:
+                pass
             return IMAGE_FILE_MACHINE_ARM64
         # common x64 names
         if 'x86-64' in name or 'x86_64' in name or 'amd64' in name or 'i386:x86-64' in name:
+            try:
+                trace_cat('arch', "[detect] -> AMD64 (name match)")
+            except Exception:
+                pass
             return IMAGE_FILE_MACHINE_AMD64
         # Fallback: infer from pointer size
         try:
             if ctypes.sizeof(ctypes.c_void_p) == 8:
+                try:
+                    trace_cat('arch', "[detect] -> AMD64 (fallback: ptrsize=8)")
+                except Exception:
+                    pass
                 return IMAGE_FILE_MACHINE_AMD64
+        except Exception:
+            pass
+        try:
+            trace_cat('arch', "[detect] -> AMD64 (final default)")
         except Exception:
             pass
         return IMAGE_FILE_MACHINE_AMD64
@@ -431,11 +516,20 @@ class GdbServices:
             t = gdb.lookup_type('void').pointer()
             sz = int(getattr(t, 'sizeof', 0) or 0)
             if sz:
+                try:
+                    trace_cat('arch', f"[detect] pointer size from gdb types: {sz}")
+                except Exception:
+                    pass
                 return sz
         except Exception:
             pass
         try:
-            return ctypes.sizeof(ctypes.c_void_p)
+            sz = ctypes.sizeof(ctypes.c_void_p)
+            try:
+                trace_cat('arch', f"[detect] pointer size from ctypes: {sz}")
+            except Exception:
+                pass
+            return sz
         except Exception:
             return 8
 
@@ -580,6 +674,60 @@ class GdbServices:
                         break
         except Exception as ex:
             trace(f"_fill_amd64_dt_context error: {ex}")
+
+    def _fill_arm64_dt_context(self, frame, contextFlags, context_ptr):
+        """Populate an ARM64 DT_CONTEXT layout subset: ContextFlags, Cpsr, X0..X28, Fp(x29), Lr(x30), Sp, Pc."""
+        try:
+            # Minimal ARM64 DT_CONTEXT layout up to Pc (matches dbgtargetcontext.h offsets)
+            class DT_ARM64_MIN(ctypes.Structure):
+                _fields_ = [
+                    ("ContextFlags", ULONG),            # 0x000
+                    ("Cpsr", ULONG),                    # 0x004
+                    # 0x008: X0..X28 (29 x 8 bytes)
+                    ("X0", ULONG64), ("X1", ULONG64), ("X2", ULONG64), ("X3", ULONG64), ("X4", ULONG64),
+                    ("X5", ULONG64), ("X6", ULONG64), ("X7", ULONG64), ("X8", ULONG64), ("X9", ULONG64),
+                    ("X10", ULONG64), ("X11", ULONG64), ("X12", ULONG64), ("X13", ULONG64), ("X14", ULONG64),
+                    ("X15", ULONG64), ("X16", ULONG64), ("X17", ULONG64), ("X18", ULONG64), ("X19", ULONG64),
+                    ("X20", ULONG64), ("X21", ULONG64), ("X22", ULONG64), ("X23", ULONG64), ("X24", ULONG64),
+                    ("X25", ULONG64), ("X26", ULONG64), ("X27", ULONG64), ("X28", ULONG64),
+                    ("Fp", ULONG64),                     # 0x0f0 (x29)
+                    ("Lr", ULONG64),                     # 0x0f8 (x30)
+                    ("Sp", ULONG64),                     # 0x100
+                    ("Pc", ULONG64),                     # 0x108
+                ]
+
+            # Treat context_ptr as DT_ARM64_MIN*
+            dt = ctypes.cast(context_ptr, ctypes.POINTER(DT_ARM64_MIN)).contents
+            dt.ContextFlags = ULONG(contextFlags).value
+
+            # Helper to read a register with fallbacks
+            def _reg(*names):
+                for nm in names:
+                    try:
+                        return int(frame.read_register(nm))
+                    except Exception:
+                        continue
+                return 0
+
+            # CPSR (aka PSTATE on AArch64)
+            cpsr = _reg('cpsr', 'pstate') & 0xFFFFFFFF
+            dt.Cpsr = ULONG(cpsr).value
+
+            # X0..X28
+            for i in range(29):
+                try:
+                    val = _reg(f'x{i}')
+                except Exception:
+                    val = 0
+                setattr(dt, f'X{i}', ULONG64(val).value)
+
+            # Fp (x29), Lr (x30), Sp, Pc
+            dt.Fp = ULONG64(_reg('x29', 'fp')).value
+            dt.Lr = ULONG64(_reg('x30', 'lr')).value
+            dt.Sp = ULONG64(_reg('sp')).value
+            dt.Pc = ULONG64(_reg('pc')).value
+        except Exception as ex:
+            trace(f"_fill_arm64_dt_context error: {ex}")
 
     # --- GDB stop hook wiring ---
     def _make_stop_handler(self):
@@ -1797,7 +1945,14 @@ class GdbServices:
         trace("call into lldb_get_processor_type")
         if type_ptr:
             try:
-                type_ptr.contents.value = self._detect_machine_type()
+                arch_name = self._detect_arch_name()
+                mtype = self._detect_machine_type()
+                type_ptr.contents.value = mtype
+                try:
+                    mname = 'ARM64' if mtype == IMAGE_FILE_MACHINE_ARM64 else 'AMD64'
+                    trace_cat('arch', f"[lldb_get_processor_type] arch_name='{arch_name}', machine=0x{mtype:04x} ({mname})")
+                except Exception:
+                    pass
             except Exception:
                 # Default to AMD64 if detection fails
                 type_ptr.contents.value = IMAGE_FILE_MACHINE_AMD64
@@ -2114,7 +2269,13 @@ class GdbServices:
 
     def lldb_get_context_stack_trace(self, this_ptr, startContext, startContextSize, frames, framesSize, frameContexts, frameContextsSize, frameContextsEntrySize, framesFilled):
         trace("call into lldb_get_context_stack_trace")
-        return 0x80004001
+        # Minimal implementation: return S_OK with zero frames so SOS can fall back to its own unwinder.
+        try:
+            if framesFilled:
+                framesFilled.contents.value = 0
+        except Exception:
+            pass
+        return 0
 
     def lldb_read_virtual(self, this_ptr, address, buffer, bufferSize, bytesRead):
         try:
@@ -2564,11 +2725,14 @@ class GdbServices:
                 ctypes.cast(context, ctypes.POINTER(ULONG)).contents.value = flags
                 self._fill_amd64_dt_context(frame, flags, ctypes.cast(context, ctypes.c_void_p))
             else:
-                # For ARM64, we don't currently marshal a Windows-style CONTEXT.
-                # Leave buffer zeroed and return E_NOTIMPL so callers can fall back.
+                # ARM64: set flags and populate DT_CONTEXT fields
                 try:
-                    # Still update our cached offsets below
-                    pass
+                    CONTEXT_ARM64 = 0x00400000
+                    CONTEXT_CONTROL = 0x00000001
+                    CONTEXT_INTEGER = 0x00000002
+                    flags = (CONTEXT_ARM64 | CONTEXT_CONTROL | CONTEXT_INTEGER)
+                    ctypes.cast(context, ctypes.POINTER(ULONG)).contents.value = flags
+                    self._fill_arm64_dt_context(frame, flags, ctypes.cast(context, ctypes.c_void_p))
                 except Exception:
                     pass
             # Update cache for this sysid so offset getters can avoid using gdb APIs
@@ -2589,23 +2753,125 @@ class GdbServices:
                 self._current_thread_sysid = sysId
             except Exception:
                 pass
-            if mtype == IMAGE_FILE_MACHINE_AMD64:
-                return 0
-            else:
-                return 0x80004001
+            # Return success for both AMD64 and ARM64
+            return 0
         except Exception as ex:
             trace(f"lldb_get_thread_context_by_system_id error: {ex}")
             return 0x80004005
 
     def lldb_get_value_by_name(self, this_ptr, name, value_ptr):
         trace("call into lldb_get_value_by_name")
-        return 0x80004001
+        try:
+            if not value_ptr or not name:
+                return 0x80004003
+            try:
+                key = name.decode() if isinstance(name, (bytes, bytearray)) else str(name)
+            except Exception:
+                key = str(name)
+            key_l = (key or '').strip().lower()
+
+            # Helper: read current PC/SP robustly
+            def _cur_pc_sp():
+                pc_v = 0
+                sp_v = 0
+                try:
+                    # Ensure we are on the cached current thread
+                    if self._current_thread_sysid:
+                        t = self._find_thread_by_sysid(self._current_thread_sysid)
+                        if t is not None:
+                            t.switch()
+                except Exception:
+                    pass
+                try:
+                    fr = gdb.newest_frame()
+                    if fr is not None:
+                        try:
+                            pc_v = int(fr.read_register('pc'))
+                        except Exception:
+                            try:
+                                pc_v = int(fr.read_register('rip'))
+                            except Exception:
+                                pc_v = 0
+                        try:
+                            sp_v = int(fr.read_register('sp'))
+                        except Exception:
+                            try:
+                                sp_v = int(fr.read_register('rsp'))
+                            except Exception:
+                                sp_v = 0
+                except Exception:
+                    pass
+                return pc_v, sp_v
+
+            # Helper: get stack bounds by scanning /proc/<pid>/maps for mapping containing SP
+            def _stack_bounds_for_sp(sp_addr: int):
+                pid = self._get_pid() or 0
+                if not pid or not sp_addr:
+                    return (0, 0)
+                low = 0
+                high = 0
+                try:
+                    maps_path = f"/proc/{pid}/maps"
+                    with open(maps_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        for line in f:
+                            try:
+                                parts = line.strip().split()
+                                if not parts:
+                                    continue
+                                addr_range = parts[0]
+                                start_s, end_s = addr_range.split('-')
+                                start = int(start_s, 16)
+                                end = int(end_s, 16)
+                                if start <= sp_addr < end:
+                                    low = start
+                                    high = end
+                                    # Prefer a mapping labeled [stack] or [stack:tid]
+                                    if len(parts) >= 6:
+                                        label = ' '.join(parts[5:])
+                                        # Found containing range; keep it and break
+                                    break
+                            except Exception:
+                                continue
+                except Exception:
+                    return (0, 0)
+                return (low, high) if high > low else (0, 0)
+
+            pc, sp = _cur_pc_sp()
+            val = None
+            if key_l in ('$pc', 'pc', 'instructionoffset', 'ip'):
+                val = pc
+            elif key_l in ('$sp', 'sp', 'stackoffset'):
+                val = sp
+            elif key_l in ('stackbase', 'threadstackbase', 'stackhigh', 'stack_top', 'stack_top_addr'):
+                low, high = _stack_bounds_for_sp(sp)
+                val = high
+            elif key_l in ('stacklimit', 'threadstacklimit', 'stacklow', 'stack_bottom', 'stack_bottom_addr'):
+                low, high = _stack_bounds_for_sp(sp)
+                val = low
+
+            if val is None:
+                return 0x80004001
+            try:
+                value_ptr.contents.value = ctypes.c_size_t(int(val)).value
+            except Exception:
+                return 0x80004005
+            return 0
+        except Exception:
+            return 0x80004005
 
     def lldb_get_instruction_offset(self, this_ptr, offset_ptr):
         trace("call into lldb_get_instruction_offset")
         try:
             if offset_ptr:
                 rip = 0
+                # Ensure GDB is on the correct thread for direct register reads
+                try:
+                    if self._current_thread_sysid:
+                        t = self._find_thread_by_sysid(self._current_thread_sysid)
+                        if t is not None:
+                            t.switch()
+                except Exception:
+                    pass
                 if self._current_thread_sysid in self._context_cache:
                     rip = self._context_cache[self._current_thread_sysid].get('rip', 0)
                 if not rip:
@@ -2630,6 +2896,14 @@ class GdbServices:
         try:
             if offset_ptr:
                 rsp = 0
+                # Ensure GDB is on the correct thread for direct register reads
+                try:
+                    if self._current_thread_sysid:
+                        t = self._find_thread_by_sysid(self._current_thread_sysid)
+                        if t is not None:
+                            t.switch()
+                except Exception:
+                    pass
                 if self._current_thread_sysid in self._context_cache:
                     rsp = self._context_cache[self._current_thread_sysid].get('rsp', 0)
                 if not rsp:
@@ -2654,6 +2928,14 @@ class GdbServices:
         try:
             if offset_ptr:
                 rbp = 0
+                # Ensure GDB is on the correct thread for direct register reads
+                try:
+                    if self._current_thread_sysid:
+                        t = self._find_thread_by_sysid(self._current_thread_sysid)
+                        if t is not None:
+                            t.switch()
+                except Exception:
+                    pass
                 if self._current_thread_sysid in self._context_cache:
                     rbp = self._context_cache[self._current_thread_sysid].get('rbp', 0)
                 if not rbp:

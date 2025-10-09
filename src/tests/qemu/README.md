@@ -127,6 +127,10 @@ Run inside the VM:
   cd /workspaces/gdbsos
 
 - Build (inside VM) or copy your arm64 artifacts here.
+- Ensure JIT memory protections are compatible with bpmd/JIT breakpoints under test
+  
+  export DOTNET_EnableWriteXorExecute=0
+
 - Use GDB as usual (no ptrace limitations in full-system emulation):
 
   gdb --args /path/to/your/arm64/app
