@@ -2,7 +2,7 @@
 set -euo pipefail
 # build-coreclr-corelib.sh
 # Minimal helper to build only CoreCLR native runtime + System.Private.CoreLib implementation (no full libs)
-# Defaults: Debug, x64, current repo commit (assumed to match target shared framework version).
+# Defaults: Debug, current host arch, current repo commit (assumed to match target shared framework version).
 # It will:
 #   1. Run ./build.sh -subset clr.runtime to build native pieces
 #   2. Run ./build.sh -subset clr.corelib to build System.Private.CoreLib
@@ -25,7 +25,22 @@ set -euo pipefail
 #     $CORE_ROOT/corerun SomeApp.dll
 #
 CONFIG="${CONFIG:-Debug}"
-ARCH="${ARCH:-x64}"
+# Default ARCH to the current machine architecture if not provided
+if [[ -z "${ARCH:-}" ]]; then
+  case "$(uname -m)" in
+    x86_64|amd64)
+      ARCH="x64"
+      ;;
+    aarch64|arm64)
+      ARCH="arm64"
+      ;;
+    *)
+      # Fallback to x64 if unknown; can be overridden by setting ARCH explicitly
+      ARCH="x64"
+      echo "WARN: Unrecognized host arch '$(uname -m)'; defaulting ARCH=${ARCH}. Set ARCH to override." >&2
+      ;;
+  esac
+fi
 STEP="${STEP:-all}"
 # Resolve repository root robustly. Prefer git, fallback to parent of parent of this script (since we're under src/scripts).
 if command -v git >/dev/null 2>&1; then
@@ -47,16 +62,6 @@ export DOTNET_MULTILEVEL_LOOKUP=0
 export DOTNET_INSTALL_DIR="${REPO_ROOT}/src/runtime/.dotnet-${ARCH}"
 export DOTNET_ROOT="${DOTNET_INSTALL_DIR}"
 export PATH="${DOTNET_INSTALL_DIR}:${DOTNET_INSTALL_DIR}/tools:${PATH}"
-
-# Acquire a runtime-local lock to guard .dotnet symlink/installer and the entire build from races
-HAVE_RT_LOCK=0
-if command -v flock >/dev/null 2>&1; then
-  RT_LOCK_FILE="${REPO_ROOT}/src/runtime/.dotnet-arcade.lock"
-  exec {RT_LOCK_FD}>"${RT_LOCK_FILE}"
-  echo "==> Acquiring runtime toolset lock: ${RT_LOCK_FILE}"
-  flock "${RT_LOCK_FD}"
-  HAVE_RT_LOCK=1
-fi
 
 # Print toolset diagnostics and ensure SDK from runtime/global.json is present
 echo "==> Runtime toolset"

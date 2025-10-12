@@ -8,6 +8,9 @@ import re
 from abi import *
 from tracing import TRACE_ENABLED, trace, trace_cat
 
+# Symbol option flags (mirror of diagnostics/inc/lldbservices.h)
+SYMOPT_LOAD_LINES = 0x00000010
+
 
 class GdbServices:
     """Implements the SOS services interfaces in Python."""
@@ -2400,7 +2403,18 @@ class GdbServices:
 
     def lldb_get_symbol_options(self, this_ptr, options):
         trace("call into lldb_get_symbol_options")
-        return 0x80004001
+        try:
+            if not options:
+                return 0x80004005
+            # Match LLDB plugin behavior: always report that loading line info is enabled
+            options.contents.value = ctypes.c_uint32(SYMOPT_LOAD_LINES).value
+            return 0
+        except Exception as ex:
+            try:
+                trace(f"lldb_get_symbol_options EXCEPTION: {ex}")
+            except Exception:
+                pass
+            return 0x80004005
 
     def lldb_get_name_by_offset(self, this_ptr, offset, nameBuffer, nameBufferSize, nameSize, displacement):
         trace("call into lldb_get_name_by_offset")

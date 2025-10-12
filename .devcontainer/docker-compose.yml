@@ -34,8 +34,8 @@ services:
     user: vscode
     privileged: true
     tty: true
-    command: sleep infinity
     depends_on:
       binfmt:
         condition: service_completed_successfully
+    command: sleep infinity
     environment: {}
