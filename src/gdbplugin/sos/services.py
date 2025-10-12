@@ -46,6 +46,10 @@ class GdbServices:
         self._bridge_update_fn = None
         # Track if a continue() has been scheduled to avoid duplicate requests
         self._continue_pending = False
+        # Optional hooks to call into the native bridge for hosting and PID updates
+        # Set by sos.py after loading the bridge
+        self._bridge_update_fn = None          # callable(pid:int)->HRESULT
+        self._bridge_init_hosting_fn = None    # callable(runtime_dir:Optional[bytes], major:int)->HRESULT
 
         iunknown_vtbl = IUnknownVtbl(QI_FUNC_TYPE(self.query_interface), ADDREF_FUNC_TYPE(self.add_ref), RELEASE_FUNC_TYPE(self.release))
 
@@ -887,6 +891,14 @@ class GdbServices:
                 if os.path.basename(fname) != 'libcoreclr.so':
                     return
                 trace_cat('bpmd', f"[new-objfile] detected {fname}")
+                # Initialize managed hosting as soon as the CLR module is mapped
+                try:
+                    init_fn = getattr(self, '_bridge_init_hosting_fn', None)
+                    if callable(init_fn):
+                        hr = int(init_fn(None, 0))
+                        trace_cat('bpmd', f"[new-objfile] InitManagedHosting hr=0x{hr & 0xFFFFFFFF:08x}")
+                except Exception as exi:
+                    trace(f"[new-objfile] InitManagedHosting note: {exi}")
                 # Proactively update managed target PID so managed host can enumerate runtimes
                 try:
                     self._update_host_target_pid_if_possible()
@@ -1662,6 +1674,14 @@ class GdbServices:
                     try:
                         # Mark runtime initialized when the entry is reached
                         services_self._runtime_initialized = True
+                        # Initialize managed hosting now that runtime has entered
+                        try:
+                            init_fn = getattr(services_self, '_bridge_init_hosting_fn', None)
+                            if callable(init_fn):
+                                hr = int(init_fn(None, 0))
+                                trace_cat('bpmd', f"[runtime-bp] InitManagedHosting hr=0x{hr & 0xFFFFFFFF:08x}")
+                        except Exception as exi:
+                            trace_cat('bpmd', f"[runtime-bp] InitManagedHosting note: {exi}")
                         # Refresh coreclr mapping cache and update host target PID
                         try:
                             services_self._scan_coreclr()

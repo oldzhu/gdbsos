@@ -504,20 +504,30 @@ class SOSCommand(gdb.Command):
                         if upd is not None:
                             upd.argtypes = [ctypes.c_uint]
                             upd.restype = ctypes.c_int
-                            # Assign a small wrapper to services so it can invoke the bridge
                             def _bridge_update(pid: int):
                                 try:
                                     return upd(int(pid))
                                 except Exception:
                                     return 0x80004005
-                            try:
-                                # services module class has attribute for this
-                                SOSCommand.gdb_services._bridge_update_fn = _bridge_update
-                            except Exception:
-                                pass
+                            SOSCommand.gdb_services._bridge_update_fn = _bridge_update
                     except Exception as exu:
                         if TRACE_ENABLED:
                             gdb.write(f"[sos] bridge UpdateManagedTarget wiring note: {exu}\n")
+                    # Wire InitManagedHosting into services so it can be called on CLR load / runtime entry
+                    try:
+                        init_hosting = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
+                        if init_hosting is not None:
+                            init_hosting.argtypes = [ctypes.c_char_p, ctypes.c_int]
+                            init_hosting.restype = ctypes.c_int
+                            def _bridge_init_hosting(runtime_dir: bytes | None, major: int):
+                                try:
+                                    return init_hosting(runtime_dir, int(major))
+                                except Exception:
+                                    return 0x80004005
+                            SOSCommand.gdb_services._bridge_init_hosting_fn = _bridge_init_hosting
+                    except Exception as exi:
+                        if TRACE_ENABLED:
+                            gdb.write(f"[sos] bridge InitManagedHosting wiring note: {exi}\n")
             except Exception as e:
                 if TRACE_ENABLED:
                     gdb.write(f"[sos] Bridge InitGdbExtensions note: {e}\n")
@@ -620,6 +630,37 @@ class SOSCommand(gdb.Command):
             try:
                 if hasattr(SOSCommand, 'gdb_services') and SOSCommand.gdb_services is not None:
                     SOSCommand.gdb_services.clear_interrupt()
+            except Exception:
+                pass
+            # Pre-dispatch guard: if CLR is loaded but hosting not initialized, attempt to init and update target
+            try:
+                if SOSCommand._is_runtime_loaded():
+                    # Try to initialize hosting via bridge if available
+                    bridge = getattr(SOSCommand, 'bridge_handle', None)
+                    if bridge is not None:
+                        init_hosting = getattr(bridge, 'InitManagedHosting', None)
+                        if init_hosting is not None:
+                            init_hosting.argtypes = [ctypes.c_char_p, ctypes.c_int]
+                            init_hosting.restype = ctypes.c_int
+                            hres = init_hosting(None, 0)
+                            if TRACE_ENABLED:
+                                gdb.write(f"[sos] Pre-dispatch InitManagedHosting hr=0x{hres & 0xFFFFFFFF:08x}\n")
+                        # Update target PID so symbol service binds to the correct process
+                        try:
+                            pid = 0
+                            if hasattr(SOSCommand, 'gdb_services') and SOSCommand.gdb_services is not None:
+                                pid = SOSCommand.gdb_services._get_pid() or 0
+                            if pid:
+                                upd = getattr(bridge, 'UpdateManagedTarget', None)
+                                if upd is not None:
+                                    upd.argtypes = [ctypes.c_uint]
+                                    upd.restype = ctypes.c_int
+                                    hr2 = upd(int(pid))
+                                    if TRACE_ENABLED:
+                                        gdb.write(f"[sos] Pre-dispatch UpdateManagedTarget(pid={pid}) => 0x{hr2 & 0xFFFFFFFF:08x}\n")
+                        except Exception as exu:
+                            if TRACE_ENABLED:
+                                gdb.write(f"[sos] Pre-dispatch UpdateManagedTarget note: {exu}\n")
             except Exception:
                 pass
             # If CLR just became available after earlier failures, clear stale error state once
