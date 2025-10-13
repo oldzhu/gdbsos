@@ -1894,12 +1894,12 @@ class GdbServices:
         return 0
 
     def lldb_get_interrupt(self, this_ptr):
-        trace("call into lldb_get_interrupt")
+        trace_cat('interrupt', "call into lldb_get_interrupt")
         # Return S_OK (0) when interrupted, S_FALSE (1) otherwise
         return 0 if getattr(self, "_interrupted", False) else 1
 
     def lldb_output_va_list(self, this_ptr, mask, fmt, va_list_ptr):
-        trace("call into lldb_output_va_list")
+        trace_cat('output', "call into lldb_output_va_list")
         try:
             if getattr(self, "_interrupted", False):
                 return 0

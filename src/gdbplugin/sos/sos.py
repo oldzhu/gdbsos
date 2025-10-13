@@ -558,32 +558,31 @@ class SOSCommand(gdb.Command):
             # We no longer fabricate a Python host fallback to avoid creating a 2nd host/runtime.
             use_host = os.environ.get('SOS_GDB_USE_HOST', '1') not in ('', '0', 'false', 'False')
             if use_host and not native_host_ptr and getattr(SOSCommand, 'bridge_handle', None):
-                # Do NOT start managed hosting until the target CLR is actually loaded.
-                # This prevents pre-run help from trying to use managed plumbing and failing.
-                if SOSCommand._is_runtime_loaded():
-                    try:
-                        init_managed = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
-                        if init_managed is not None:
-                            init_managed.argtypes = [ctypes.c_char_p, ctypes.c_int]
-                            init_managed.restype = ctypes.c_int
-                            hr_host = init_managed(None, 0)
-                            if TRACE_ENABLED:
-                                gdb.write(f"[sos] InitManagedHosting retry hr=0x{hr_host & 0xFFFFFFFF:08x}\n")
-                            # Requery host pointer after attempt
-                            try:
-                                get_host = getattr(SOSCommand.bridge_handle, 'GetHostForSos', None)
-                                if get_host is not None:
-                                    get_host.argtypes = []
-                                    get_host.restype = ctypes.c_void_p
-                                    native_host_ptr = get_host()
-                                    if TRACE_ENABLED and native_host_ptr:
-                                        gdb.write(f"[sos] Native IHost acquired after retry: 0x{native_host_ptr:x}\n")
-                            except Exception as ex2:
-                                if TRACE_ENABLED:
-                                    gdb.write(f"[sos] Host requery note: {ex2}\n")
-                    except Exception as ex1:
+                # Eagerly start managed hosting so that a native IHost is available for SOSInitializeByHost.
+                # This mirrors the LLDB flow where hosting can be initialized prior to runtime load.
+                try:
+                    init_managed = getattr(SOSCommand.bridge_handle, 'InitManagedHosting', None)
+                    if init_managed is not None:
+                        init_managed.argtypes = [ctypes.c_char_p, ctypes.c_int]
+                        init_managed.restype = ctypes.c_int
+                        hr_host = init_managed(None, 0)
                         if TRACE_ENABLED:
-                            gdb.write(f"[sos] InitManagedHosting retry exception: {ex1}\n")
+                            gdb.write(f"[sos] InitManagedHosting eager hr=0x{hr_host & 0xFFFFFFFF:08x}\n")
+                        # Requery host pointer after attempt
+                        try:
+                            get_host = getattr(SOSCommand.bridge_handle, 'GetHostForSos', None)
+                            if get_host is not None:
+                                get_host.argtypes = []
+                                get_host.restype = ctypes.c_void_p
+                                native_host_ptr = get_host()
+                                if TRACE_ENABLED and native_host_ptr:
+                                    gdb.write(f"[sos] Native IHost acquired after eager init: 0x{native_host_ptr:x}\n")
+                        except Exception as ex2:
+                            if TRACE_ENABLED:
+                                gdb.write(f"[sos] Host requery note: {ex2}\n")
+                except Exception as ex1:
+                    if TRACE_ENABLED:
+                        gdb.write(f"[sos] InitManagedHosting eager exception: {ex1}\n")
 
             if use_host:
                 if native_host_ptr:
