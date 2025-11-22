@@ -10,6 +10,8 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends \
         cmake \
         llvm \
+        llvm-11 \
+        llvm-11-tools \
         clang-11 \
         clang \
         build-essential \
