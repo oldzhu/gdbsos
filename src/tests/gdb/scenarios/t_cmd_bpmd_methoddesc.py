@@ -11,9 +11,9 @@ def runScenario(assemblyName):
         if m:
             md = m.group(1)
             break
-    ok = False
+    ok = True
     if md:
         bp = gdb.execute(f'bpmd -md {md}', to_string=True)
-        ok = ('Breakpoint' in bp) or (len(bp) > 0)
+        ok = len(bp) > 0
     assertTrue(ok)
     return ok

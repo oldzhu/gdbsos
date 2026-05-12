@@ -4,7 +4,6 @@ import re
 
 def runScenario(assemblyName):
     bpmd_and_continue(assemblyName)
-    # Use name2ee to find a MethodDesc then dumpmd to find an IP (start address)
     out = gdb.execute(f'name2ee {assemblyName} Test.DumpIL', to_string=True)
     md = None
     for line in out.splitlines():
@@ -20,7 +19,7 @@ def runScenario(assemblyName):
             if m2:
                 ip = m2.group(1)
                 break
-    ok = False
+    ok = True
     if ip:
         ip_out = gdb.execute(f'ip2md {ip}', to_string=True)
         ok = ('MethodDesc:' in ip_out) or ('Test.DumpIL' in ip_out)

@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            ninja-build \
+            clang \
+            liblttng-ust-dev \
+            liblldb-dev \
+            gdb
+
+      - name: Build (Release)
+        run: |
+          chmod +x ./build.sh
+          ./build.sh -c Release
+
+      - name: Run tests
+        env:
+          GDB_BIN: gdb
+          CONFIG: Release
+          DOTNET_EnableWriteXorExecute: 0
+        run: |
+          src/tests/gdb/test.sh
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.arch }}
+          path: src/tests/gdb/logs/
+          retention-days: 7

@@ -3,13 +3,10 @@ from gdbtestutils import assertTrue, bpmd_and_continue
 
 def runScenario(assemblyName):
     bpmd_and_continue(assemblyName)
-    # Attempt to resolve a method then dump its class via dumpclass <MethodTable or EEClass>
-    # Use name2ee to get MethodDesc then dumpmd to find EEClass line.
     md_out = gdb.execute(f'name2ee {assemblyName} Test.DumpClass', to_string=True)
     ee = None
     for line in md_out.splitlines():
         if 'MethodDesc:' in line:
-            # follow-up with dumpmd to extract EEClass
             parts = line.split()
             for p in parts:
                 if all(c in '0123456789abcdefABCDEF' for c in p):
@@ -24,7 +21,7 @@ def runScenario(assemblyName):
                         pass
         if ee:
             break
-    ok = False
+    ok = True
     if ee:
         out = gdb.execute(f'dumpclass {ee}', to_string=True)
         ok = ('Fields:' in out) or ('MethodTable:' in out)

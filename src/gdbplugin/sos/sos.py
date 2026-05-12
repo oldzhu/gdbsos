@@ -944,9 +944,9 @@ class SOSCommand(gdb.Command):
                 return
             # If we never managed to dispatch, print guidance
             gdb.write(
-                "This command is managed-only on Linux and isn’t exported from libsos.so.\n"
+                "This command is managed-only on Linux and isn't exported from libsos.so.\n"
                 "Managed hosting is not initialized or failed.\n"
-                "Try: sethostruntime or use lldb’s sos plugin / dotnet-dump.\n"
+                "Try: sethostruntime or use lldb's sos plugin / dotnet-dump.\n"
             )
 
         except AttributeError:
@@ -1078,7 +1078,7 @@ def _print_sos_help_static(arg: Optional[str]):
 
 
 class SosExecUmbrellaCommand(gdb.Command):
-    """sos exec <command> [args] — Fallback dynamic dispatcher for any SOS command."""
+    """sos exec <command> [args] -- Fallback dynamic dispatcher for any SOS command."""
     def __init__(self):
         super(SosExecUmbrellaCommand, self).__init__("sos exec", gdb.COMMAND_DATA)
         self.__doc__ = "Dispatch an SOS command dynamically (use if a subcommand isn't registered)."
@@ -1209,7 +1209,7 @@ SosExecUmbrellaCommand()
 
 
 class ExtUmbrellaCommand(gdb.Command):
-    """ext <command> [args] — Alias for 'sos' umbrella."""
+    """ext <command> [args] -- Alias for 'sos' umbrella."""
     def __init__(self):
         super(ExtUmbrellaCommand, self).__init__("ext", gdb.COMMAND_DATA)
 

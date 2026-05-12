@@ -205,3 +205,73 @@ For GC stress, tiering experiments, or multi-arch scenarios, extend the build sc
 - Two services exist in `.devcontainer/docker-compose.yml`: `dev-amd64` and `dev-arm64`.
 - On WSL2 x86_64 hosts, `dev-arm64` uses QEMU via a one-shot `binfmt` init service that registers QEMU 10.0.14 at container start.
 - Rebuild the container if you change compose or Dockerfile; no rebuild needed for script-only changes.
+
+## CI/CD (自动化构建与测试 / Automated Build &amp; Test)
+
+### 中文 / zh-cn
+
+**CI 工作流** (`.github/workflows/ci.yml`) 在每次 push 和 PR 时自动运行：
+- 在 `ubuntu-latest` (x64) 和 `ubuntu-24.04-arm` (arm64) 上构建 Release 版本
+- 在两个架构上运行 SOS 集成测试套件
+- 测试日志作为 CI 工件上传（保留 7 天）
+
+**发布工作流** (`.github/workflows/release.yml`)：
+- 在 `v*` 标签推送时触发
+- 为 x64 和 arm64 构建和打包
+- 上传 `.tar.gz`、`.symbols.tar.gz` 和 `.sha256` 到 GitHub Release
+
+### English / en
+
+**CI workflow** (`.github/workflows/ci.yml`) runs automatically on every push and PR:
+- Builds Release on `ubuntu-latest` (x64) and `ubuntu-24.04-arm` (arm64)
+- Runs SOS integration test suite on both architectures
+- Test logs uploaded as CI artifacts (retained 7 days)
+
+**Release workflow** (`.github/workflows/release.yml`):
+- Triggers on `v*` tag push
+- Builds and packages for x64 and arm64
+- Uploads `.tar.gz`, `.symbols.tar.gz`, and `.sha256` to GitHub Release
+
+## 运行测试 / Running Tests
+
+### 本地运行 / Local Run
+
+```bash
+# x64 或 native arm64
+src/tests/gdb/test.sh
+
+# 指定配置
+CONFIG=Release src/tests/gdb/test.sh
+
+# 指定 GDB 二进制
+GDB_BIN=/usr/bin/gdb src/tests/gdb/test.sh
+
+# 仅运行特定场景
+REGEX='t_cmd_clrstack' src/tests/gdb/test.sh
+```
+
+### QEMU ARM64 测试（从 x86_64） / QEMU ARM64 Testing (from x86_64)
+
+```bash
+cd src/tests/qemu
+./prepare.sh
+./run.sh
+```
+
+### 测试场景列表 / Test Scenario List
+
+场景遵循 `src/tests/gdb/scenarios/t_cmd_<command>.py` 格式，包含 52 个场景（32 个基础 + 20 个新增）：
+
+**基础命令** (32 个): bpmd (6 个变体), clrstack, clrthreads, clru, dso, dumpclass, dumpheap, dumpil, dumplog, dumpmd, dumpmodule, dumpmt, dumpobj, dumpstack, eeheap, eestack, gcroot, hist* (5), ip2md, name2ee, pe, sos, soshelp
+
+**新增** (20 个): sosflush, sostrace, sosstatus, syncblk, threadpool, eeversion, gchandles, runtimes, clrmodules, assemblies, dumpvc, printexception, threadstate, objsize, verifyheap, dumpstackobjects, gcheapstat, finalizequeue, gcwhere, token2ee
+
+## 设计文档 / Design Docs
+
+架构设计文档可在 `docs/design/` 下找到（六份双语 [zh-cn + en] 文档）：
+- `01-overview.md` — 系统总览与架构图
+- `02-bridge-arch.md` — 原生桥接 (libsosgdbbridge.so)
+- `03-plugin-services.md` — Python 服务层
+- `04-managed-hosting.md` — 托管主机初始化流程
+- `05-arch-detection.md` — x64/arm64 架构检测与 ABI
+- `06-tracing.md` — 跟踪与诊断子系统

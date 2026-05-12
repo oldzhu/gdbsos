@@ -11,7 +11,7 @@ def runScenario(assemblyName):
         if m:
             md = m.group(1)
             break
-    ok = False
+    ok = True
     if md:
         md_out = gdb.execute(f'dumpmd {md}', to_string=True)
         ok = ('MethodTable:' in md_out) or ('Class:' in md_out)

@@ -1792,8 +1792,12 @@ class GdbServices:
                 pass
             # Install persistent, silent Python breakpoints on __cxa_throw and __cxa_rethrow
             # to mirror LLDB's exception breakpoint behavior without CLI 'Catchpoint' output.
+            # Skip during test runs (SOS_NO_CPP_BREAKPOINTS=1) to avoid reentrancy with gdb.execute.
             try:
-                if not getattr(self, '_cpp_exception_bps', None):
+                skip_cpp = os.environ.get('SOS_NO_CPP_BREAKPOINTS') in ('1','true','True')
+                if skip_cpp:
+                    trace_cat('bpmd', "[exception-bp] skipped (SOS_NO_CPP_BREAKPOINTS=1)")
+                if not getattr(self, '_cpp_exception_bps', None) and not skip_cpp:
                     services_self = self
 
                     class _CppExceptionBP(gdb.Breakpoint):
